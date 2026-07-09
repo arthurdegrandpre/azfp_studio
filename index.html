@@ -71,6 +71,8 @@ main{overflow:hidden;display:flex;flex-direction:column;min-width:0}
 .pill{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:3px 9px;font-size:11px;color:var(--mut)}
 
 .egwrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
+#egnav{flex:0 0 60px;height:60px;border-top:1px solid var(--line);background:#0a0e14;position:relative}
+#egNav{width:100%;height:100%;display:block;cursor:ew-resize}
 #egCanvas{flex:1;width:100%;display:block;cursor:crosshair}
 .readout{position:absolute;top:8px;left:72px;background:rgba(8,12,18,.85);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;font-variant-numeric:tabular-nums;pointer-events:none;min-width:150px}
 .readout b{color:var(--accent)}
@@ -221,6 +223,7 @@ tr:hover td{background:#151d28}
         <canvas id="egCanvas"></canvas>
         <div class="readout" id="readout">Load data or click <b>Demo</b> →</div>
       </div>
+      <div id="egnav" title="Overview — drag the window to browse; click elsewhere to jump"><canvas id="egNav"></canvas></div>
     </section>
 
     <section class="view" data-view="vdist" style="display:none"><div id="vdistBody"></div></section>
@@ -246,6 +249,16 @@ const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 const log10=x=>Math.log(x)/Math.LN10;
 const fmt=(x,d=2)=>(x==null||!isFinite(x))?'—':Number(x).toFixed(d);
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2600);}
+/* span-aware UTC time formatting for axes that may cover minutes .. months */
+function fmtTick(ms,spanMs){
+  const d=new Date(ms), p=n=>String(n).padStart(2,'0');
+  const HH=p(d.getUTCHours()),MM=p(d.getUTCMinutes()),SS=p(d.getUTCSeconds()),mo=p(d.getUTCMonth()+1),da=p(d.getUTCDate());
+  if(spanMs<=2*3600000) return HH+':'+MM+':'+SS;
+  if(spanMs<=2*86400000) return mo+'-'+da+' '+HH+':'+MM;
+  if(spanMs<=60*86400000) return mo+'-'+da;
+  return d.getUTCFullYear()+'-'+mo+'-'+da;
+}
+function axisTimeFmt(times){ const span=(times&&times.length>1)?(times[times.length-1]-times[0]):3600000; return v=>fmtTick(v,span); }
 
 /* ==========================================================================
    1. AZFP BINARY PARSER  (124-byte header, big-endian, FLAG 0xFD02)
@@ -620,8 +633,11 @@ function drawEchogram(){
   for(let k=0;k<=6;k++){const fy=k/6,y=AX.top+fy*ph;ctx.strokeStyle='rgba(255,255,255,.05)';ctx.beginPath();ctx.moveTo(AX.left,y);ctx.lineTo(AX.left+pw,y);ctx.stroke();ctx.fillStyle='#8b98a9';ctx.fillText(fmt(depthAt(fy),1),AX.left-6,y);}
   ctx.save();ctx.translate(14,AX.top+ph/2);ctx.rotate(-Math.PI/2);ctx.textAlign='center';ctx.fillStyle='#c6d2df';ctx.fillText('Depth (m)'+(g.orient==='up'?' · up-looking':''),0,0);ctx.restore();
   ctx.textAlign='center';ctx.textBaseline='top';
-  for(let k=0;k<=6;k++){const fx=k/6,x=AX.left+fx*pw;ctx.fillStyle='#8b98a9';ctx.fillText(new Date(timeAt(fx)).toISOString().slice(11,16),x,AX.top+ph+6);}
-  ctx.fillStyle='#c6d2df';ctx.fillText('Time UTC · '+new Date(g.time[0]).toISOString().slice(0,10),AX.left+pw/2,H-13);
+  const _t0=timeAt(0), _t1=timeAt(1), _span=Math.max(1,_t1-_t0);
+  for(let k=0;k<=6;k++){const fx=k/6,x=AX.left+fx*pw;ctx.fillStyle='#8b98a9';ctx.fillText(fmtTick(timeAt(fx),_span),x,AX.top+ph+6);}
+  ctx.fillStyle='#c6d2df';
+  ctx.fillText('Time UTC · '+new Date(_t0).toISOString().replace('T',' ').slice(0,16)+'  →  '+new Date(_t1).toISOString().replace('T',' ').slice(0,16),AX.left+pw/2,H-13);
+  drawDayBoundaries(ctx,pw,ph,v,g);
   ctx.strokeStyle='#2a3646';ctx.strokeRect(AX.left,AX.top,pw,ph);
   // per-file segment boundaries + labels
   if(g.segs&&g.segs.length>1){
@@ -641,6 +657,7 @@ function drawEchogram(){
     ctx.fillStyle=col;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.fillText(r.name||('R'+(i+1)),rc.x+3,rc.y-1);});
   if(dragRegion){const rc=rectPx(dragRegion,pw,ph);ctx.strokeStyle='#57e6a5';ctx.setLineDash([5,4]);ctx.lineWidth=1.5;ctx.strokeRect(rc.x,rc.y,rc.w,rc.h);}
   ctx.restore();
+  renderNav();
 }
 function rectPx(r,pw,ph){const v=STATE.view;
   const x=AX.left+((r.x0-v.x0)/(v.x1-v.x0))*pw, x2=AX.left+((r.x1-v.x0)/(v.x1-v.x0))*pw;
@@ -649,6 +666,69 @@ function rectPx(r,pw,ph){const v=STATE.view;
 function drawColorbar(){
   const cv=$('#cbar'),ctx=cv.getContext('2d');
   for(let x=0;x<cv.width;x++){const[r,g,b]=cmap(STATE.palette,x/cv.width);ctx.fillStyle=`rgb(${r|0},${g|0},${b|0})`;ctx.fillRect(x,0,1,cv.height);}
+}
+/* vertical UTC-day separators (labelled) within the visible echogram window */
+function drawDayBoundaries(ctx,pw,ph,v,g){
+  if(g.nT<2)return;
+  const c0=Math.max(1,Math.floor(v.x0*(g.nT-1))), c1=Math.min(g.nT-1,Math.ceil(v.x1*(g.nT-1)));
+  const bnds=[]; let prev=new Date(g.time[c0]).getUTCDate();
+  for(let t=c0+1;t<=c1;t++){const d=new Date(g.time[t]).getUTCDate(); if(d!==prev){bnds.push(t);prev=d;}}
+  if(!bnds.length||bnds.length>400)return;
+  const every=Math.ceil(bnds.length/8);
+  ctx.save();ctx.beginPath();ctx.rect(AX.left,AX.top,pw,ph);ctx.clip();ctx.font='10px sans-serif';ctx.textBaseline='top';ctx.textAlign='left';
+  bnds.forEach((t,bi)=>{const fx=t/(g.nT-1),x=AX.left+((fx-v.x0)/(v.x1-v.x0))*pw; if(x<AX.left||x>AX.left+pw)return;
+    ctx.strokeStyle='rgba(120,180,255,.35)';ctx.setLineDash([2,3]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,AX.top);ctx.lineTo(x,AX.top+ph);ctx.stroke();ctx.setLineDash([]);
+    if(bi%every===0){ctx.fillStyle='rgba(140,190,255,.95)';ctx.fillText(new Date(g.time[t]).toISOString().slice(5,10),x+2,AX.top+2);}});
+  ctx.restore();
+}
+/* ---- Navigator / overview strip (multi-day browsing) ---- */
+let navImg=null, navSig='';
+function buildNavImg(){
+  const g=STATE.grid; if(!g)return;
+  const NAVW=Math.min(1200,Math.max(150,g.nT)), step=Math.max(1,Math.ceil(g.nT/NAVW)), nBmp=Math.max(1,Math.ceil(g.nT/step)), ny=Math.min(g.nB,90);
+  const off=document.createElement('canvas'); off.width=nBmp; off.height=ny;
+  const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,ny);
+  const smin=+$('#svMin').value,smax=+$('#svMax').value,rng=(smax-smin)||1;
+  for(let t=0;t<nBmp;t++){const a0=t*step,a1=Math.min(g.nT,a0+step);
+    for(let yy=0;yy<ny;yy++){const i=Math.min(g.nB-1,Math.floor(yy/ny*g.nB));
+      let acc=0,cnt=0; for(let cc=a0;cc<a1;cc++){acc+=Math.pow(10,g.sv[cc*g.nB+i]/10);cnt++;}
+      const svA=10*log10(acc/Math.max(1,cnt)),[r,gg,b]=cmap(STATE.palette,(svA-smin)/rng),idx=(yy*nBmp+t)*4;
+      img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;}}
+  ctx.putImageData(img,0,0); navImg={canvas:off,nT:nBmp,nB:ny};
+}
+function renderNav(){
+  const g=STATE.grid, cv=$('#egNav'), nav=$('#egnav'); if(!g||!cv||!nav)return;
+  const sig=[g.nT,STATE.activeFreq,STATE.palette,$('#svMin').value,$('#svMax').value].join(',');
+  if(sig!==navSig){buildNavImg();navSig=sig;}
+  const W=nav.clientWidth,H=nav.clientHeight,dpr=window.devicePixelRatio||1;
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+  const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const padL=AX.left,padR=AX.right,plotW=W-padL-padR,top=3,bot=15,plotH=H-top-bot;
+  if(navImg){ctx.imageSmoothingEnabled=false;ctx.drawImage(navImg.canvas,0,0,navImg.nT,navImg.nB,padL,top,plotW,plotH);}
+  const v=STATE.view,x0=padL+v.x0*plotW,x1=padL+v.x1*plotW;
+  ctx.fillStyle='rgba(5,8,12,.6)';ctx.fillRect(padL,top,x0-padL,plotH);ctx.fillRect(x1,top,padL+plotW-x1,plotH);
+  ctx.fillStyle='rgba(76,196,255,.15)';ctx.fillRect(x0,top,Math.max(2,x1-x0),plotH);
+  ctx.strokeStyle='#4cc4ff';ctx.lineWidth=1.5;ctx.strokeRect(x0,top,Math.max(2,x1-x0),plotH);
+  if(navDrag&&navDrag.mode==='sel'&&navDrag.end!=null){const a=padL+Math.min(navDrag.start,navDrag.end)*plotW,b=padL+Math.max(navDrag.start,navDrag.end)*plotW;ctx.strokeStyle='#57e6a5';ctx.setLineDash([4,3]);ctx.strokeRect(a,top,Math.max(2,b-a),plotH);ctx.setLineDash([]);}
+  ctx.font='10px sans-serif';ctx.textBaseline='top';ctx.fillStyle='#8b98a9';
+  ctx.textAlign='left';ctx.fillText(new Date(g.time[0]).toISOString().replace('T',' ').slice(0,16),padL,top+plotH+2);
+  ctx.textAlign='right';ctx.fillText(new Date(g.time[g.nT-1]).toISOString().replace('T',' ').slice(0,16),padL+plotW,top+plotH+2);
+  ctx.textAlign='center';ctx.fillStyle='#5a6b7d';ctx.fillText('overview — drag window to browse',padL+plotW/2,top+plotH+2);
+}
+let navDrag=null;
+function navFrac(e){const nav=$('#egnav'),rc=nav.getBoundingClientRect(),W=nav.clientWidth,plotW=W-AX.left-AX.right;return clamp((e.clientX-rc.left-AX.left)/plotW,0,1);}
+function initNav(){
+  const cv=$('#egNav'); if(!cv)return;
+  cv.addEventListener('mousedown',e=>{if(!STATE.grid)return;const fx=navFrac(e),v=STATE.view;
+    if(fx>=v.x0&&fx<=v.x1)navDrag={mode:'pan',grab:fx-v.x0,w:v.x1-v.x0}; else navDrag={mode:'sel',start:fx,end:fx};});
+  window.addEventListener('mousemove',e=>{if(!navDrag||!STATE.grid)return;const fx=navFrac(e);
+    if(navDrag.mode==='pan'){let x0=clamp(fx-navDrag.grab,0,1-navDrag.w);STATE.view={...STATE.view,x0,x1:x0+navDrag.w};refreshEchogram();}
+    else{navDrag.end=fx;renderNav();}});
+  window.addEventListener('mouseup',e=>{if(!navDrag)return;const fx=navFrac(e);
+    if(navDrag.mode==='sel'){const a=Math.min(navDrag.start,fx),b=Math.max(navDrag.start,fx);
+      if(b-a>0.005)STATE.view={...STATE.view,x0:a,x1:b}; else{const w=STATE.view.x1-STATE.view.x0;let x0=clamp(fx-w/2,0,1-w);STATE.view={...STATE.view,x0,x1:x0+w};}
+      refreshEchogram();}
+    navDrag=null;});
 }
 
 /* full redraw of echogram tab */
@@ -792,7 +872,7 @@ function renderVDist(){
   const cal=calStatus(); $('#calBannerV').outerHTML = cal? `<div class="banner">${cal}</div>`:'';
   lineChart($('#cProf'),[{pts:svDb,color:'#57e6a5',w:1.8}],{flipY:true,xlabel:'Sv (dB re 1 m⁻¹)',ylabel:'Depth (m)',xmin:+$('#svMin').value,xmax:+$('#svMax').value,ymin:Math.min(...prof.depth),ymax:Math.max(...prof.depth),yd:1});
   const dvm=[];for(let t=0;t<cms.t.length;t++)dvm.push([cms.t[t],cms.cm[t]]);
-  lineChart($('#cDVM'),[{pts:dvm,color:'#4cc4ff',w:1.6}],{flipY:true,ylabel:'CM depth (m)',xfmt:v=>new Date(v).toISOString().slice(11,16)});
+  lineChart($('#cDVM'),[{pts:dvm,color:'#4cc4ff',w:1.6}],{flipY:true,ylabel:'CM depth (m)',xfmt:axisTimeFmt(cms.t)});
   // layer table
   const layers=layerMetrics(prof.depth,prof.svLin,STATE.grid.dz,10);
   $('#layerTbl').innerHTML=`<thead><tr><th>Depth band (m)</th><th class="num">Mean Sv</th><th class="num">NASC</th><th class="num">% of total</th></tr></thead><tbody>`+
@@ -829,7 +909,7 @@ function renderAncillary(){
       <div class="card"><h4>Battery</h4><div class="sub">Volts</div><canvas id="acBatt" class="chartbox"></canvas></div>
     </div>
     <div class="btnrow" style="margin-top:12px"><button id="expAnc">⇩ Export ancillary CSV</button></div>`;
-  const xf=v=>new Date(v).toISOString().slice(11,16);
+  const xf=axisTimeFmt(a.t);
   lineChart($('#acTemp'),[{pts:a.t.map((t,i)=>[t,a.temp[i]]),color:'#ffb454'}],{xfmt:xf,ylabel:'°C'});
   lineChart($('#acTilt'),[
     {pts:a.t.map((t,i)=>[t,a.tiltx[i]]),color:'#4cc4ff',w:1.2},
@@ -984,7 +1064,7 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
 
   <h3>7 · Multiple frequencies &amp; large deployments</h3>
   <p>Each transducer frequency is handled as an <b>independent time series</b>. AZFP deployments often sample a secondary board (e.g. 67 kHz) on a coarser schedule than the primary (e.g. 455 kHz), so the two frequencies have different numbers of profiles at different times. The parser routes every ping's channels to the matching frequency, and the <b>Frequency</b> selector switches the echogram, metrics, and ancillary panels between them.</p>
-  <p>For multi-month records the app keeps memory bounded with several strategies: files are parsed one at a time and their raw bytes freed immediately after; each frequency stores its profiles as a compact <code>Uint16</code> count grid; and — in the default <b>burst-averaged</b> load mode — pings are grouped into bursts (by acquisition gaps) and averaged to one profile per burst, which is the natural long-term representation for diel-migration work. Only the active frequency is expanded to a floating-point Sv grid for display. An <b>Every-ping</b> mode preserves full resolution for shorter records. The echogram additionally uses <b>zoom-aware</b> level-of-detail rendering: when zoomed out it aggregates profiles so the drawn image never exceeds a few thousand columns regardless of dataset length, but when zoomed in it rebuilds the visible window at full per-ping resolution. Estimated in-app memory is shown in the header and Automation tab.</p>
+  <p>For multi-month records the app keeps memory bounded with several strategies: files are parsed one at a time and their raw bytes freed immediately after; each frequency stores its profiles as a compact <code>Uint16</code> count grid; and — in the default <b>burst-averaged</b> load mode — pings are grouped into bursts (by acquisition gaps) and averaged to one profile per burst, which is the natural long-term representation for diel-migration work. Only the active frequency is expanded to a floating-point Sv grid for display. An <b>Every-ping</b> mode preserves full resolution for shorter records. For multi-day records an <b>overview navigator</b> strip below the echogram shows the whole series with a draggable view window, time-axis labels adapt to the visible span (seconds up to dates), and dashed UTC day boundaries are drawn and labelled so long series remain easy to orient in. The echogram additionally uses <b>zoom-aware</b> level-of-detail rendering: when zoomed out it aggregates profiles so the drawn image never exceeds a few thousand columns regardless of dataset length, but when zoomed in it rebuilds the visible window at full per-ping resolution. Estimated in-app memory is shown in the header and Automation tab.</p>
 
   <h3>Data-integrity note</h3>
   <p>The example files bundled with this project were altered by a text-mode transfer: high bytes (0x80–0xFF) were replaced with the Unicode replacement marker, which is <b>lossy and irreversible</b> for the acoustic amplitudes. AZFP Studio therefore ships with a synthetic demonstration deployment. Load your original binary <code>.01A</code> files (and the matching <code>.XML</code>) for real analysis — the parser reads the genuine format directly.</p>
@@ -1199,7 +1279,7 @@ function initUI(){
   $$('.tools button[data-tool]').forEach(b=>b.onclick=()=>{STATE.tool=b.dataset.tool;$$('.tools button[data-tool]').forEach(x=>x.classList.toggle('on',x===b));$('#egCanvas').style.cursor=b.dataset.tool==='region'?'crosshair':b.dataset.tool==='zoom'?'zoom-in':'grab';});
   $('#resetView').onclick=()=>{STATE.view={x0:0,x1:1,y0:0,y1:1};refreshEchogram();};
   $('#exportPng').onclick=()=>{const cv=$('#egCanvas');cv.toBlob(b=>{const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='azfp_echogram.png';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);});toast('Echogram PNG saved');};
-  initEgEvents();
+  initEgEvents(); initNav();
   window.addEventListener('resize',()=>{if($$('.tab').find(t=>t.classList.contains('on')).dataset.v==='echogram')refreshEchogram();});
   drawColorbar();
   renderMethods();
