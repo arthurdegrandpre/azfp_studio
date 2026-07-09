@@ -4,6 +4,9 @@ A single-file, dependency-free browser app for analysing **ASL Environmental Sci
 
 It reads raw AZFP binary files directly in the browser, converts recorded counts to calibrated volume backscattering strength (Sv), and provides an interactive echogram, distribution metrics, ancillary-sensor plots, region annotation, and batch export. Everything runs client-side — no server, no build step, no data leaves the machine.
 
+> **Live app:** `https://<USERNAME>.github.io/azfp-studio/`
+> Replace `<USERNAME>` with your GitHub username after enabling Pages (see [Deployment](#deployment)).
+
 ---
 
 ## Features
