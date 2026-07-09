@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AZFP Studio — Vertical Target Distribution</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#141a22; --panel2:#1b2431; --line:#2a3646;
+  --txt:#e6edf3; --mut:#8b98a9; --accent:#4cc4ff; --accent2:#57e6a5;
+  --warn:#ffb454; --bad:#ff6b6b; --chip:#223; --radius:10px;
+  font-synthesis:none;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--txt);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:6px 11px;border-radius:8px;cursor:pointer;transition:.12s}
+button:hover{border-color:var(--accent);background:#22303f}
+button.primary{background:linear-gradient(180deg,#1c5f86,#164b6b);border-color:#2b7aa8}
+button.primary:hover{background:linear-gradient(180deg,#2277a8,#195a80)}
+button.ghost{background:transparent}
+button:disabled{opacity:.4;cursor:not-allowed}
+input,select{background:#0b1017;border:1px solid var(--line);border-radius:7px;padding:5px 8px}
+input[type=range]{padding:0;accent-color:var(--accent)}
+label{color:var(--mut)}
+a{color:var(--accent)}
+.hidden{display:none!important}
+
+#app{display:grid;grid-template-columns:288px 1fr;grid-template-rows:48px 1fr;height:100%}
+header{grid-column:1/3;display:flex;align-items:center;gap:14px;padding:0 16px;background:linear-gradient(180deg,#161d27,#10151d);border-bottom:1px solid var(--line)}
+header .logo{font-weight:700;letter-spacing:.3px;font-size:15px;display:flex;align-items:center;gap:9px}
+header .logo b{color:var(--accent)}
+header .dot{width:9px;height:9px;border-radius:50%;background:var(--accent2);box-shadow:0 0 9px var(--accent2)}
+header .spacer{flex:1}
+header .hstat{color:var(--mut);font-size:12px}
+header .hstat b{color:var(--txt)}
+
+aside{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:12px}
+aside h3{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--mut);margin:16px 0 8px}
+aside h3:first-child{margin-top:2px}
+.drop{border:1.5px dashed var(--line);border-radius:var(--radius);padding:16px 12px;text-align:center;color:var(--mut);transition:.15s;cursor:pointer}
+.drop.hot{border-color:var(--accent);background:#0f2231;color:var(--txt)}
+.drop b{color:var(--accent)}
+.filelist{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.filerow{display:flex;align-items:center;gap:6px;font-size:12px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:5px 7px}
+.filerow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filerow .rm{color:var(--mut);cursor:pointer;padding:0 3px}
+.filerow .rm:hover{color:var(--bad)}
+.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.field{display:flex;flex-direction:column;gap:3px;margin-bottom:8px}
+.field label{font-size:11px}
+.field.row{flex-direction:row;align-items:center;justify-content:space-between}
+.field.row input{width:96px;text-align:right}
+.mini{font-size:11px;color:var(--mut)}
+.kv{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;border-bottom:1px dotted #223}
+.kv span:last-child{color:var(--txt);font-variant-numeric:tabular-nums}
+
+main{overflow:hidden;display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;gap:2px;padding:8px 12px 0;background:var(--panel);border-bottom:1px solid var(--line)}
+.tab{padding:8px 15px;border-radius:8px 8px 0 0;background:transparent;border:1px solid transparent;border-bottom:none;color:var(--mut);cursor:pointer;font-weight:500}
+.tab.on{background:var(--bg);color:var(--txt);border-color:var(--line)}
+.view{flex:1;overflow:auto;padding:16px;min-height:0}
+.view.pad0{padding:0}
+
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+.toolbar .grp{display:flex;align-items:center;gap:7px;padding-right:10px;border-right:1px solid var(--line)}
+.toolbar .grp:last-child{border-right:none}
+.toolbar label{font-size:11px}
+.toolbar input[type=range]{width:110px}
+.pill{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:3px 9px;font-size:11px;color:var(--mut)}
+
+.egwrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
+#egCanvas{flex:1;width:100%;display:block;cursor:crosshair}
+.readout{position:absolute;top:8px;left:72px;background:rgba(8,12,18,.85);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;font-variant-numeric:tabular-nums;pointer-events:none;min-width:150px}
+.readout b{color:var(--accent)}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px}
+.card h4{margin:0 0 4px;font-size:13px}
+.card .sub{color:var(--mut);font-size:11px;margin-bottom:10px}
+.metric{display:flex;flex-direction:column;gap:2px}
+.metric .big{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
+.metric .lbl{font-size:11px;color:var(--mut)}
+.chartbox{width:100%;height:230px;display:block}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--mut);font-weight:600;position:sticky;top:0;background:var(--panel)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr:hover td{background:#151d28}
+.swatch{width:12px;height:12px;border-radius:3px;display:inline-block;vertical-align:-1px;margin-right:5px}
+
+.banner{background:linear-gradient(90deg,#3a2a12,#2a2012);border:1px solid #5a4415;color:#ffcf8a;border-radius:10px;padding:10px 13px;margin-bottom:14px;font-size:12.5px}
+.banner b{color:#ffe0b0}
+.prose{max-width:900px;line-height:1.7}
+.prose h2{font-size:17px;margin:24px 0 6px;color:var(--accent)}
+.prose h3{font-size:14px;margin:18px 0 4px}
+.prose code,.eq{background:#0b1017;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.eq{display:block;padding:11px 14px;margin:8px 0;white-space:pre-wrap;color:#cfe6f5;overflow-x:auto}
+.prose p{color:#c6d2df}
+.tag{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:1px 7px;font-size:11px;margin:2px 3px 2px 0}
+.legend{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mut)}
+.cbar{height:12px;width:180px;border-radius:3px;border:1px solid var(--line)}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--mut);gap:10px;text-align:center}
+.tools{display:flex;gap:6px}
+.tools button.on{border-color:var(--accent);color:var(--accent)}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#10151d;border:1px solid var(--accent);color:var(--txt);padding:10px 16px;border-radius:10px;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.5);opacity:0;transition:.25s;pointer-events:none}
+.toast.show{opacity:1;bottom:26px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:none;border-radius:0;border-right:1px solid var(--line);padding:5px 10px}
+.seg button:last-child{border-right:none}
+.seg button.on{background:#1c5f86;color:#fff}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#2a3646;border-radius:6px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo"><span class="dot"></span>AZFP&nbsp;<b>Studio</b></div>
+    <span class="pill" id="freqPill">— kHz</span>
+    <div class="spacer"></div>
+    <div class="hstat" id="hstat">No data loaded</div>
+    <button class="ghost" id="demoBtn2" title="Load a synthetic demo deployment">▶ Demo data</button>
+  </header>
+
+  <aside>
+    <h3>Data files</h3>
+    <div class="drop" id="drop">
+      <div>Drop <b>.01A</b> / <b>.XML</b> / <b>.mfawcpl</b> here</div>
+      <div class="mini" style="margin-top:5px">or click to browse · multiple files OK</div>
+      <input type="file" id="fileInput" multiple class="hidden"/>
+    </div>
+    <div class="filelist" id="filelist"></div>
+    <div class="btnrow">
+      <button class="primary" id="processBtn" disabled>Process</button>
+      <button id="demoBtn">Demo</button>
+      <button id="clearBtn" class="ghost">Clear</button>
+    </div>
+
+    <h3>Deployment</h3>
+    <div class="field row"><label>Orientation</label>
+      <div class="seg" id="orientSeg"><button data-o="up" class="on">Up-looking</button><button data-o="down">Down</button></div>
+    </div>
+    <div class="field row"><label>Instrument depth (m)</label><input type="number" id="depDepth" value="100" step="1"/></div>
+    <div class="field row"><label>Channel</label><select id="chanSel"></select></div>
+
+    <div id="mfawBox" class="hidden">
+      <h3>Deployment metadata <span class="mini">(.mfawcpl)</span></h3>
+      <div id="mfawMeta"></div>
+    </div>
+
+    <h3>Calibration <span class="mini" id="calSrc">(defaults)</span></h3>
+    <div class="field row"><label title="Sound speed">c (m/s)</label><input type="number" id="cC" value="1450.5" step="0.1"/></div>
+    <div class="field row"><label title="Echo level max, dB re 1µPa">EL (dB)</label><input type="number" id="cEL" value="149.0" step="0.1"/></div>
+    <div class="field row"><label title="Detector slope">DS</label><input type="number" id="cDS" value="0.0257" step="0.0001"/></div>
+    <div class="field row"><label title="Transmit voltage response">TVR (dB)</label><input type="number" id="cTVR" value="165.0" step="0.1"/></div>
+    <div class="field row"><label title="Transmit voltage">VTX0 (V)</label><input type="number" id="cVTX" value="112.0" step="0.1"/></div>
+    <div class="field row"><label title="Equivalent two-way beam angle, dB re 1 sr">EBA (dB)</label><input type="number" id="cEBA" value="-18.0" step="0.1"/></div>
+    <div class="field row"><label title="Absorption coefficient">α (dB/m)</label><input type="number" id="cAlpha" value="0.065" step="0.001"/></div>
+    <div class="field row"><label title="Pulse length">τ (µs)</label><input type="number" id="cTau" value="300" step="1"/></div>
+    <div class="mini" id="calNote">Defaults set for freshwater. Load the .mfawcpl for acquisition params and the instrument .XML for EL/DS/TVR/VTX0/BP.</div>
+
+    <h3>Project</h3>
+    <div class="btnrow">
+      <button id="saveProj">Save project</button>
+      <button id="loadProj" class="ghost">Load</button>
+      <input type="file" id="projInput" accept=".json,.azfpproj" class="hidden"/>
+    </div>
+  </aside>
+
+  <main>
+    <div class="tabs" id="tabs">
+      <div class="tab on" data-v="echogram">Echogram</div>
+      <div class="tab" data-v="vdist">Vertical distribution</div>
+      <div class="tab" data-v="ancillary">Ancillary sensors</div>
+      <div class="tab" data-v="annot">Annotations</div>
+      <div class="tab" data-v="batch">Automation</div>
+      <div class="tab" data-v="methods">Methods</div>
+    </div>
+
+    <section class="view pad0" data-view="echogram" style="display:flex;flex-direction:column">
+      <div class="toolbar">
+        <div class="grp">
+          <label>Sv range</label>
+          <input type="range" id="svMin" min="-120" max="-40" value="-90"/>
+          <span class="pill" id="svMinLbl">-90</span>
+          <input type="range" id="svMax" min="-90" max="-10" value="-40"/>
+          <span class="pill" id="svMaxLbl">-40</span> dB
+        </div>
+        <div class="grp">
+          <label>Palette</label>
+          <select id="paletteSel">
+            <option value="viridis">Viridis</option>
+            <option value="ev">EK/Echoview</option>
+            <option value="turbo">Turbo</option>
+            <option value="grey">Grey</option>
+          </select>
+        </div>
+        <div class="grp">
+          <label>Time avg</label>
+          <select id="pingAvg"><option value="1">none</option><option value="3">3 pings</option><option value="6">6 pings</option><option value="12">12 pings</option></select>
+        </div>
+        <div class="grp tools">
+          <label>Tool</label>
+          <button data-tool="pan" class="on" id="toolPan">✥ Pan</button>
+          <button data-tool="zoom" id="toolZoom">⊕ Zoom</button>
+          <button data-tool="region" id="toolRegion">▭ Region</button>
+          <button id="resetView" class="ghost">Reset</button>
+        </div>
+        <div class="grp legend">
+          <span>Sv</span><canvas id="cbar" class="cbar" width="180" height="12"></canvas>
+        </div>
+        <div class="grp"><button id="exportPng" class="ghost">⇩ PNG</button></div>
+      </div>
+      <div class="egwrap" id="egwrap">
+        <canvas id="egCanvas"></canvas>
+        <div class="readout" id="readout">Load data or click <b>Demo</b> →</div>
+      </div>
+    </section>
+
+    <section class="view" data-view="vdist" style="display:none"><div id="vdistBody"></div></section>
+    <section class="view" data-view="ancillary" style="display:none"><div id="ancBody"></div></section>
+    <section class="view" data-view="annot" style="display:none"><div id="annotBody"></div></section>
+    <section class="view" data-view="batch" style="display:none"><div id="batchBody"></div></section>
+    <section class="view" data-view="methods" style="display:none"><div id="methodsBody" class="prose"></div></section>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================================
+   AZFP Studio — single-file analysis app for ASL AZFP acoustic profiler data.
+   Binary .01A parser (0xFD02 compact-flash records, big-endian) · Echoview/ASL
+   Sv & TS calibration · vertical target-distribution metrics · annotation ·
+   project I/O · batch automation.  No external dependencies; fully offline.
+   ==========================================================================*/
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const log10=x=>Math.log(x)/Math.LN10;
+const fmt=(x,d=2)=>(x==null||!isFinite(x))?'—':Number(x).toFixed(d);
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2600);}
+
+/* ==========================================================================
+   1. AZFP BINARY PARSER  (124-byte header, big-endian, FLAG 0xFD02)
+   ========================================================================== */
+const AZFP_FLAG=0xFD02;
+const u2=(dv,o)=>dv.getUint16(o,false), u4=(dv,o)=>dv.getUint32(o,false), u1=(dv,o)=>dv.getUint8(o);
+function parseHeaderAt(dv,o){
+  if(o+124>dv.byteLength||u2(dv,o)!==AZFP_FLAG) return null;
+  const h={};
+  h.flag=u2(dv,o); h.profile_number=u2(dv,o+2); h.serial=u2(dv,o+4); h.ping_status=u2(dv,o+6);
+  h.burst_int=u4(dv,o+8);
+  h.year=u2(dv,o+12); h.month=u2(dv,o+14); h.day=u2(dv,o+16);
+  h.hour=u2(dv,o+18); h.minute=u2(dv,o+20); h.second=u2(dv,o+22); h.hundredths=u2(dv,o+24);
+  h.dig_rate=[u2(dv,o+26),u2(dv,o+28),u2(dv,o+30),u2(dv,o+32)];
+  h.lockout=[u2(dv,o+34),u2(dv,o+36),u2(dv,o+38),u2(dv,o+40)];
+  h.num_bins=[u2(dv,o+42),u2(dv,o+44),u2(dv,o+46),u2(dv,o+48)];
+  h.range_spb=[u2(dv,o+50),u2(dv,o+52),u2(dv,o+54),u2(dv,o+56)];
+  h.ping_per_profile=u2(dv,o+58); h.avg_pings=u2(dv,o+60);
+  h.num_acq_pings=u2(dv,o+62); h.ping_period=u2(dv,o+64);
+  h.first_ping=u2(dv,o+66); h.last_ping=u2(dv,o+68);
+  h.data_type=[u1(dv,o+70),u1(dv,o+71),u1(dv,o+72),u1(dv,o+73)];
+  h.data_error=u2(dv,o+74); h.phase=u1(dv,o+76); h.overrun=u1(dv,o+77);
+  h.num_chan=u1(dv,o+78);
+  h.gain=[u1(dv,o+79),u1(dv,o+80),u1(dv,o+81),u1(dv,o+82)];
+  h.spare=u1(dv,o+83);
+  h.pulse_len=[u2(dv,o+84),u2(dv,o+86),u2(dv,o+88),u2(dv,o+90)];
+  h.board=[u2(dv,o+92),u2(dv,o+94),u2(dv,o+96),u2(dv,o+98)];
+  h.frequency=[u2(dv,o+100),u2(dv,o+102),u2(dv,o+104),u2(dv,o+106)];
+  h.sensor_flag=u2(dv,o+108);
+  h.ancillary=[u2(dv,o+110),u2(dv,o+112),u2(dv,o+114),u2(dv,o+116),u2(dv,o+118)];
+  h.ad=[u2(dv,o+120),u2(dv,o+122)];
+  return h;
+}
+function parseAZFP(buf,fname){
+  const dv=new DataView(buf), N=buf.byteLength, HEADER=124, pings=[];
+  let o=0;
+  while(o<N-2 && u2(dv,o)!==AZFP_FLAG) o++;
+  if(o>=N-2){
+    let fffd=0; const lim=Math.min(N-2,40000);
+    for(let k=0;k<lim;k++){ if(dv.getUint8(k)===0xEF&&dv.getUint8(k+1)===0xBF&&dv.getUint8(k+2)===0xBD) fffd++; }
+    if(fffd>20) throw new Error('"'+fname+'" was damaged by a text-mode transfer: bytes above 127 were replaced with the Unicode replacement character ('+fffd+'+ found). That loss is irreversible. Copy the original binary .01A files straight from the instrument / SD card and load those.');
+    throw new Error('No 0xFD02 record flag found in "'+fname+'" — this does not look like an AZFP .01A data file.');
+  }
+  while(o<=N-HEADER){
+    const h=parseHeaderAt(dv,o);
+    if(!h){o++;continue;}
+    const nchan=clamp(h.num_chan||1,1,4);
+    let ok=true; for(let c=0;c<nchan;c++){const nb=h.num_bins[c]||0; if(nb<0||nb>200000){ok=false;break;}}
+    if(!ok){o++;continue;}
+    // Per-channel sample layout from data_type: 0 = raw (2 bytes/bin); 1 = averaged (4-byte sum + 1-byte overflow)
+    const avgFlags=[]; let dataBytes=0;
+    for(let c=0;c<nchan;c++){const nb=h.num_bins[c]||0, avgd=(h.data_type[c]||0)!==0; avgFlags.push(avgd); dataBytes+=nb*(avgd?5:2);}
+    if(dataBytes<=0){o++;continue;}
+    const end=o+HEADER+dataBytes;
+    if(end>N){ o++; continue; }                       // header can't be real, keep scanning
+    const rec={header:h,chan:[],avg:avgFlags,src:fname};
+    let p=o+HEADER;
+    for(let c=0;c<nchan;c++){
+      const nb=h.num_bins[c]||0, arr=new Float32Array(nb);
+      if(avgFlags[c]){
+        const divisor=(h.avg_pings ? (h.ping_per_profile||1)*(h.range_spb[c]||1) : (h.range_spb[c]||1))||1;
+        const lsoBase=p+nb*4;
+        for(let i=0;i<nb;i++){ const ls=u4(dv,p+i*4), lso=dv.getUint8(lsoBase+i); arr[i]=(ls+lso*4294967295)/divisor; }
+        p=lsoBase+nb;
+      } else {
+        for(let i=0;i<nb;i++){ arr[i]=u2(dv,p); p+=2; }
+      }
+      rec.chan.push(arr);
+    }
+    rec.time=Date.UTC(h.year,(h.month||1)-1,h.day||1,h.hour||0,h.minute||0,h.second||0,(h.hundredths||0)*10);
+    pings.push(rec);
+    o=end;
+  }
+  if(!pings.length) throw new Error('No decodable ping records in "'+fname+'".');
+  return pings;
+}
+function parseXMLcal(text){
+  try{
+    const xml=new DOMParser().parseFromString(text,'text/xml');
+    const arr=t=>{const e=xml.getElementsByTagName(t);if(!e.length)return null;return e[0].textContent.trim().split(/[\s,;]+/).map(Number).filter(x=>!isNaN(x));};
+    return {EL:arr('EL'),DS:arr('DS'),TVR:arr('TVR'),VTX:arr('VTX0')||arr('VTX'),BP:arr('BP'),freq:arr('kHz')||arr('Frequency')};
+  }catch(e){return null;}
+}
+
+/* ---- AZFPLink (.mfawcpl) deployment-config parser ---- */
+function parseMfawcpl(text){
+  try{
+    const xml=new DOMParser().parseFromString(text,'text/xml');
+    const num=x=>{const v=parseFloat(x);return isNaN(v)?null:v;};
+    const txt=el=>el?el.textContent.trim():null;
+    const first=t=>xml.getElementsByTagName(t)[0]||null;
+    const cfg={soundSpeed:num(txt(first('SoundSpeed'))),numFreq:num(txt(first('NumFrequencies'))),
+      numPhases:num(txt(first('NumPhases'))),channels:[],frequencies:[]};
+    const sd=first('StartDate'); if(sd){cfg.startDateStr=sd.getAttribute('svalue');cfg.startDate=txt(sd);}
+    const dOut=first('DataOutput'); if(dOut)cfg.dataOutput=dOut.getAttribute('svalue')||txt(dOut);
+    const boards=first('Boards');
+    if(boards)cfg.frequencies=[...boards.getElementsByTagName('Frequency')].map(e=>num(e.textContent));
+    const phases=[...xml.getElementsByTagName('Phase')];
+    cfg.frequencies.forEach((fk,bi)=>{
+      const boardNum=bi+1; let chosen=null, ping={};
+      for(const ph of phases){
+        const fe=[...ph.getElementsByTagName('Frequency')].find(e=>e.getAttribute('Number')===String(boardNum));
+        if(!fe)continue;
+        ping={pingPeriod:num(txt(ph.getElementsByTagName('PingPeriod')[0])),burstInterval:num(txt(ph.getElementsByTagName('BurstInterval')[0])),
+              pingsPerBurst:num(txt(ph.getElementsByTagName('PingsPerBurst')[0])),averageBurst:num(txt(ph.getElementsByTagName('AverageBurstPings')[0]))};
+        const acq=num(txt(fe.getElementsByTagName('AcquireFrequency')[0]));
+        if(acq===1){chosen=fe;break;} if(!chosen)chosen=fe;
+      }
+      if(chosen){
+        const gv=t=>num(txt(chosen.getElementsByTagName(t)[0]));
+        const rs=gv('RangeSamples'), ra=gv('RangeAveragingSamples')||1;
+        cfg.channels.push({board:boardNum,freq:fk,acquired:num(txt(chosen.getElementsByTagName('AcquireFrequency')[0]))===1,
+          pulseLen:gv('PulseLen'),digRate:gv('DigRate'),rangeSamples:rs,rangeAvg:ra,lockout:gv('LockOutIndex'),
+          gain:gv('Gain'),storageFormat:gv('StorageFormat'),numBins:(rs&&ra)?Math.floor(rs/ra):null,
+          pingPeriod:ping.pingPeriod,burstInterval:ping.burstInterval,pingsPerBurst:ping.pingsPerBurst,averageBurst:ping.averageBurst});
+      }
+    });
+    return cfg;
+  }catch(e){console.error('mfawcpl parse failed',e);return null;}
+}
+function freshwaterAbsorption(fkHz,Tc){ const A=3.964e-4-1.146e-5*Tc+1.45e-7*Tc*Tc-6.5e-10*Tc*Tc*Tc; return A*fkHz*fkHz/1000; }
+function applyMfawcpl(cfg){
+  if(!cfg){toast('Could not parse .mfawcpl');return;}
+  STATE.mfaw=cfg;
+  let ch=null,bd=1e9; cfg.channels.forEach(c=>{const d=Math.abs((c.freq||0)-455)+(c.acquired?0:1000); if(d<bd){bd=d;ch=c;}});
+  if(cfg.soundSpeed){$('#cC').value=cfg.soundSpeed;}
+  if(ch&&ch.pulseLen){$('#cTau').value=ch.pulseLen;}
+  if(cfg.soundSpeed&&cfg.soundSpeed<1480&&ch){$('#cAlpha').value=freshwaterAbsorption(ch.freq||455,8).toFixed(3);}
+  $('#calSrc').textContent='(mfawcpl)';
+  $('#calNote').innerHTML='Sound speed, pulse length'+(cfg.soundSpeed<1480?' &amp; freshwater absorption':'')+' set from <b>'+((STATE.files.find(f=>f.type==='mfawcpl')||{}).name||'.mfawcpl')+'</b>. Load the instrument coefficient .XML for EL/DS/TVR/VTX0/BP.';
+  renderMfawMeta();
+  if(STATE.pings.length){computeGrid();refreshEchogram();}
+  toast('Applied AZFPLink deployment defaults'+(ch?(' · '+ch.freq+' kHz'):''));
+}
+function renderMfawMeta(){
+  const box=$('#mfawBox'),el=$('#mfawMeta'); if(!box||!el)return;
+  if(!STATE.mfaw){box.classList.add('hidden');return;}
+  const c=STATE.mfaw; box.classList.remove('hidden');
+  const kv=(k,v)=>`<div class="kv"><span>${k}</span><span>${v}</span></div>`;
+  let h=kv('Sound speed',fmt(c.soundSpeed,1)+' m/s')+kv('Start',c.startDateStr||c.startDate||'—')+kv('Boards',(c.frequencies||[]).join(', ')+' kHz')+kv('Phases',c.numPhases!=null?c.numPhases:'—')+kv('Storage',c.dataOutput||'—');
+  (c.channels||[]).forEach(ch=>{h+=`<div class="mini" style="margin:7px 0 2px;color:var(--accent)">${ch.freq} kHz ${ch.acquired?'· acquired':'· off'}</div>`;
+    h+=kv('Pulse',fmt(ch.pulseLen,0)+' µs')+kv('Dig rate',fmt(ch.digRate,0)+' Hz')+kv('Range / avg',ch.rangeSamples+' / '+ch.rangeAvg)+kv('Bins',ch.numBins!=null?ch.numBins:'—')+kv('Lockout',ch.lockout)+kv('Ping period',fmt(ch.pingPeriod,0)+' s')+kv('Burst',fmt(ch.pingsPerBurst,0)+' pings / '+fmt(ch.burstInterval,0)+' s')+kv('Storage fmt',ch.storageFormat?'summed':'raw');});
+  el.innerHTML=h;
+}
+
+/* ==========================================================================
+   2. CALIBRATION — Echoview / ASL AZFP Sv & TS
+   ========================================================================== */
+function currentCal(){
+  return {c:+$('#cC').value,EL:+$('#cEL').value,DS:+$('#cDS').value,TVR:+$('#cTVR').value,
+    VTX0:+$('#cVTX').value,EBA:+$('#cEBA').value,alpha:+$('#cAlpha').value,tau:(+$('#cTau').value)*1e-6};
+}
+function svFromCount(N,R,cal){
+  if(N<=0)N=1;
+  return cal.EL-2.5/cal.DS+N/(26214*cal.DS)-cal.TVR-20*log10(cal.VTX0)+20*log10(R)+2*cal.alpha*R-10*log10(cal.c*cal.tau/2)-cal.EBA;
+}
+function tsFromCount(N,R,cal){
+  if(N<=0)N=1;
+  return cal.EL-2.5/cal.DS+N/(26214*cal.DS)-cal.TVR-20*log10(cal.VTX0)+40*log10(R)+2*cal.alpha*R;
+}
+
+/* ==========================================================================
+   3. STATE + PROCESSING
+   ========================================================================== */
+const STATE={files:[],pings:[],chan:0,channels:[],grid:null,anc:null,annotations:[],
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null};
+
+function buildChannels(){
+  const h=STATE.pings[0].header, nc=clamp(h.num_chan||1,1,4), chans=[];
+  for(let c=0;c<nc;c++) chans.push({idx:c,freq:h.frequency[c]||0,num_bins:h.num_bins[c]||0,
+    dig_rate:h.dig_rate[c]||64000,range_spb:h.range_spb[c]||1,lockout:h.lockout[c]||0,pulse:h.pulse_len[c]||300});
+  STATE.channels=chans;
+  let best=0,bd=1e9; chans.forEach((ch,i)=>{const d=Math.abs((ch.freq||0)-455);if(d<bd){bd=d;best=i;}});
+  STATE.chan=best;
+  const sel=$('#chanSel'); sel.innerHTML=chans.map((ch,i)=>`<option value="${i}">Ch ${i+1} · ${ch.freq||'?'} kHz</option>`).join('');
+  sel.value=best;
+  $('#freqPill').textContent=(chans[best].freq||'—')+' kHz';
+}
+function computeGrid(){
+  if(!STATE.pings.length)return;
+  const c=STATE.chan, ch=STATE.channels[c], cal=currentCal();
+  const dz=ch.range_spb*cal.c/(2*ch.dig_rate), startR=ch.lockout*cal.c/(2*ch.dig_rate), nB=ch.num_bins;
+  const range=new Float32Array(nB), depth=new Float32Array(nB);
+  const orient=$$('#orientSeg button').find(b=>b.classList.contains('on')).dataset.o, dep=+$('#depDepth').value;
+  for(let i=0;i<nB;i++){const R=startR+(i+0.5)*dz;range[i]=R;depth[i]=orient==='up'?(dep-R):(dep+R);}
+  const pings=STATE.pings.filter(p=>p.chan[c]&&p.chan[c].length===nB);
+  const nT=pings.length, sv=new Float32Array(nT*nB), time=new Array(nT);
+  for(let t=0;t<nT;t++){const pg=pings[t],arr=pg.chan[c],averaged=pg.avg&&pg.avg[c];time[t]=pg.time;
+    for(let i=0;i<nB;i++){ let Nc=arr[i]; if(averaged) Nc=(log10(Math.max(1,arr[i]))-2.5)*524280*cal.DS; sv[t*nB+i]=svFromCount(Nc,range[i],cal); }}
+  // Order depth ascending so the echogram shows shallow at top (standard convention)
+  if(nB>1 && depth[0]>depth[nB-1]){
+    depth.reverse(); range.reverse();
+    for(let t=0;t<nT;t++){for(let i=0,j=nB-1;i<j;i++,j--){const a=t*nB+i,b=t*nB+j,tmp=sv[a];sv[a]=sv[b];sv[b]=tmp;}}
+  }
+  const segs=[]; {let cur=null; for(let t=0;t<nT;t++){const src=pings[t].src||'\u2014'; if(!cur||cur.src!==src){cur={src,t0:t,t1:t};segs.push(cur);} else cur.t1=t;}}
+  STATE.grid={sv,nT,nB,depth,range,time,dz,startR,orient,dep,segs};
+  computeAncillary();
+}
+/* ancillary sensor decode from header.ancillary + .ad counts (per-ping) */
+function computeAncillary(){
+  const pings=STATE.pings, n=pings.length;
+  const t=new Array(n),temp=new Float32Array(n),tiltx=new Float32Array(n),tilty=new Float32Array(n),
+        batt=new Float32Array(n),pres=new Float32Array(n),tiltmag=new Float32Array(n);
+  for(let k=0;k<n;k++){
+    const a=pings[k].header.ancillary||[0,0,0,0,0], ad=pings[k].header.ad||[0,0];
+    t[k]=pings[k].time;
+    // ancillary layout: [tiltX, tiltY, battery, pressure, temperature] counts (0..65535)
+    const cx=a[0],cy=a[1],cb=a[2],cp=a[3],ct=a[4];
+    // tilt: polynomial default (deg). counts centred ~32768.
+    tiltx[k]=(cx-32768)/32768*45;
+    tilty[k]=(cy-32768)/32768*45;
+    tiltmag[k]=Math.sqrt(tiltx[k]**2+tilty[k]**2);
+    // battery: count -> volts (main batt divider ~ *2.5/65535*13.2)
+    batt[k]=cb*2.5/65535*13.2;
+    // pressure: counts -> dbar (linear default a=0,b=... ~ full scale 100 dbar)
+    pres[k]=cp/65535*200;
+    // temperature: Steinhart-Hart default
+    const V=ct*2.5/65535; const Ka=1.14,Kb=2.18,Kc=1.5;
+    let Rt=(Ka+Kb*V)/(Kc-V); if(!(Rt>0))Rt=1e-6;
+    const A=6.1e-4,B=2.77e-4,C=1.55e-7,lnR=Math.log(Rt);
+    let Tk=1/(A+B*lnR+C*lnR*lnR*lnR); temp[k]=Tk-273.15;
+    if(!isFinite(temp[k])) temp[k]=NaN;
+  }
+  STATE.anc={t,temp,tiltx,tilty,tiltmag,batt,pres};
+}
+
+/* ==========================================================================
+   4. VERTICAL TARGET DISTRIBUTION METRICS
+   Computed on linear sv over a depth window, per (time-averaged) profile.
+   ========================================================================== */
+function meanSvProfile(){ // returns {depth[], svLin[]} averaged over visible time window
+  const g=STATE.grid, v=STATE.view;
+  const t0=Math.floor(v.x0*(g.nT-1)), t1=Math.ceil(v.x1*(g.nT-1));
+  const nB=g.nB, acc=new Float64Array(nB); let cnt=0;
+  for(let t=t0;t<=t1;t++){for(let i=0;i<nB;i++) acc[i]+=Math.pow(10,g.sv[t*nB+i]/10);cnt++;}
+  const svLin=new Float64Array(nB); for(let i=0;i<nB;i++) svLin[i]=acc[i]/Math.max(1,cnt);
+  return {depth:g.depth,svLin,t0,t1};
+}
+// distribution indices over a set of (depth, sv_linear, dz) samples
+function distIndices(depth,svLin,dz){
+  let sum=0,sumZ=0,sumZ2=0,sumSq=0,nasc=0;
+  for(let i=0;i<svLin.length;i++){
+    const s=svLin[i], z=depth[i];
+    if(!isFinite(s)||s<=0) continue;
+    sum+=s; sumZ+=z*s; sumZ2+=z*z*s; sumSq+=s*s; nasc+=s*dz;
+  }
+  const cm=sum>0?sumZ/sum:NaN;
+  const inertia=sum>0?(sumZ2/sum-cm*cm):NaN;
+  const aggIdx=sum>0?sumSq/(sum*sum):NaN;      // index of aggregation (Bez & Rivoirard)
+  const eqArea=sumSq>0?(sum*sum)/sumSq:NaN;    // equivalent area (samples)
+  const NASC=4*Math.PI*1852*1852*nasc;         // m^2 / nmi^2
+  const svMean=sum>0?10*log10(sum/svLin.filter(x=>isFinite(x)&&x>0).length):NaN;
+  return {cm,inertia:Math.sqrt(Math.max(0,inertia)),aggIdx,eqArea:eqArea*dz,NASC,svMean};
+}
+// per-time-column center of mass series (for DVM plot)
+function cmSeries(){
+  const g=STATE.grid, out={t:g.time,cm:new Float32Array(g.nT),nasc:new Float32Array(g.nT)};
+  for(let t=0;t<g.nT;t++){
+    let sum=0,sumZ=0,nasc=0;
+    for(let i=0;i<g.nB;i++){const s=Math.pow(10,g.sv[t*g.nB+i]/10);if(s>0){sum+=s;sumZ+=g.depth[i]*s;nasc+=s*g.dz;}}
+    out.cm[t]=sum>0?sumZ/sum:NaN;
+    out.nasc[t]=4*Math.PI*1852*1852*nasc;
+  }
+  return out;
+}
+
+/* ==========================================================================
+   5. COLORMAPS + ECHOGRAM RENDER
+   ========================================================================== */
+const CMAPS={
+  viridis:[[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],
+  turbo:[[48,18,59],[68,158,235],[52,214,131],[251,203,31],[178,25,17]],
+  ev:[[0,0,80],[0,120,255],[0,220,120],[255,230,0],[255,80,0],[150,0,0]],
+  grey:[[10,12,16],[240,244,248]]
+};
+function cmap(name,t){t=clamp(t,0,1);const s=CMAPS[name]||CMAPS.viridis,n=s.length-1,f=t*n,i=Math.floor(f),fr=f-i,a=s[i],b=s[Math.min(i+1,n)];return[a[0]+(b[0]-a[0])*fr,a[1]+(b[1]-a[1])*fr,a[2]+(b[2]-a[2])*fr];}
+
+const AX={left:64,right:66,top:12,bottom:34};
+let egImg=null, dragRegion=null;
+const CLASS_COLORS={zooplankton:'#57e6a5',fish:'#ffb454','surface/ice':'#4cc4ff',bottom:'#c77dff',noise:'#ff6b6b',other:'#8b98a9'};
+
+function renderEchogramBitmap(){
+  const g=STATE.grid; if(!g)return;
+  const avg=+$('#pingAvg').value, nT=Math.max(1,Math.floor(g.nT/avg));
+  const off=document.createElement('canvas'); off.width=nT; off.height=g.nB;
+  const ctx=off.getContext('2d'), img=ctx.createImageData(nT,g.nB);
+  const smin=+$('#svMin').value, smax=+$('#svMax').value, rng=(smax-smin)||1;
+  for(let t=0;t<nT;t++){for(let i=0;i<g.nB;i++){
+    let acc=0; for(let k=0;k<avg;k++) acc+=Math.pow(10,g.sv[(t*avg+k)*g.nB+i]/10);
+    const svA=10*log10(acc/avg), [r,gg,b]=cmap(STATE.palette,(svA-smin)/rng), idx=(i*nT+t)*4;
+    img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;
+  }}
+  ctx.putImageData(img,0,0); egImg={canvas:off,nT,nB:g.nB};
+}
+function depthAt(fy){const g=STATE.grid,v=STATE.view,i=clamp(Math.round((v.y0+(v.y1-v.y0)*fy)*(g.nB-1)),0,g.nB-1);return g.depth[i];}
+function timeAt(fx){const g=STATE.grid,v=STATE.view,t=clamp(Math.round((v.x0+(v.x1-v.x0)*fx)*(g.nT-1)),0,g.nT-1);return g.time[t];}
+function drawEchogram(){
+  const cv=$('#egCanvas'),wrap=$('#egwrap'),W=wrap.clientWidth,H=wrap.clientHeight,dpr=window.devicePixelRatio||1;
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+  const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const g=STATE.grid; if(!g||!egImg)return;
+  const pw=W-AX.left-AX.right, ph=H-AX.top-AX.bottom, v=STATE.view;
+  ctx.fillStyle='#05080c';ctx.fillRect(AX.left,AX.top,pw,ph);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(egImg.canvas,v.x0*egImg.nT,v.y0*egImg.nB,(v.x1-v.x0)*egImg.nT,(v.y1-v.y0)*egImg.nB,AX.left,AX.top,pw,ph);
+  // axes
+  ctx.font='11px sans-serif';ctx.fillStyle='#8b98a9';
+  ctx.textAlign='right';ctx.textBaseline='middle';
+  for(let k=0;k<=6;k++){const fy=k/6,y=AX.top+fy*ph;ctx.strokeStyle='rgba(255,255,255,.05)';ctx.beginPath();ctx.moveTo(AX.left,y);ctx.lineTo(AX.left+pw,y);ctx.stroke();ctx.fillStyle='#8b98a9';ctx.fillText(fmt(depthAt(fy),1),AX.left-6,y);}
+  ctx.save();ctx.translate(14,AX.top+ph/2);ctx.rotate(-Math.PI/2);ctx.textAlign='center';ctx.fillStyle='#c6d2df';ctx.fillText('Depth (m)'+(g.orient==='up'?' · up-looking':''),0,0);ctx.restore();
+  ctx.textAlign='center';ctx.textBaseline='top';
+  for(let k=0;k<=6;k++){const fx=k/6,x=AX.left+fx*pw;ctx.fillStyle='#8b98a9';ctx.fillText(new Date(timeAt(fx)).toISOString().slice(11,16),x,AX.top+ph+6);}
+  ctx.fillStyle='#c6d2df';ctx.fillText('Time UTC · '+new Date(g.time[0]).toISOString().slice(0,10),AX.left+pw/2,H-13);
+  ctx.strokeStyle='#2a3646';ctx.strokeRect(AX.left,AX.top,pw,ph);
+  // per-file segment boundaries + labels
+  if(g.segs&&g.segs.length>1){
+    ctx.save();ctx.beginPath();ctx.rect(AX.left,AX.top,pw,ph);ctx.clip();ctx.font='10px sans-serif';ctx.textBaseline='top';
+    g.segs.forEach((sg,si)=>{
+      const xf0=sg.t0/(g.nT-1),xf1=sg.t1/(g.nT-1);
+      if(si>0){const xs=AX.left+((xf0-v.x0)/(v.x1-v.x0))*pw; if(xs>=AX.left&&xs<=AX.left+pw){ctx.strokeStyle='rgba(255,255,255,.4)';ctx.setLineDash([4,3]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xs,AX.top);ctx.lineTo(xs,AX.top+ph);ctx.stroke();ctx.setLineDash([]);}}
+      const mid=(xf0+xf1)/2,xm=AX.left+((mid-v.x0)/(v.x1-v.x0))*pw;
+      if(xm>=AX.left+4&&xm<=AX.left+pw-4){const nm=String(sg.src).replace(/^.*[\\/]/,'');ctx.textAlign='center';const tw=ctx.measureText(nm).width+8;ctx.fillStyle='rgba(8,12,18,.78)';ctx.fillRect(xm-tw/2,AX.top+3,tw,14);ctx.fillStyle='#cfe6f5';ctx.fillText(nm,xm,AX.top+5);}
+    });
+    ctx.restore();
+  }
+  // regions
+  ctx.save();ctx.beginPath();ctx.rect(AX.left,AX.top,pw,ph);ctx.clip();
+  STATE.annotations.forEach((r,i)=>{const rc=rectPx(r,pw,ph),col=CLASS_COLORS[r.cls]||'#4cc4ff';
+    ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.setLineDash([]);ctx.fillStyle=col+'22';ctx.fillRect(rc.x,rc.y,rc.w,rc.h);ctx.strokeRect(rc.x,rc.y,rc.w,rc.h);
+    ctx.fillStyle=col;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.fillText(r.name||('R'+(i+1)),rc.x+3,rc.y-1);});
+  if(dragRegion){const rc=rectPx(dragRegion,pw,ph);ctx.strokeStyle='#57e6a5';ctx.setLineDash([5,4]);ctx.lineWidth=1.5;ctx.strokeRect(rc.x,rc.y,rc.w,rc.h);}
+  ctx.restore();
+}
+function rectPx(r,pw,ph){const v=STATE.view;
+  const x=AX.left+((r.x0-v.x0)/(v.x1-v.x0))*pw, x2=AX.left+((r.x1-v.x0)/(v.x1-v.x0))*pw;
+  const y=AX.top+((r.y0-v.y0)/(v.y1-v.y0))*ph, y2=AX.top+((r.y1-v.y0)/(v.y1-v.y0))*ph;
+  return {x:Math.min(x,x2),y:Math.min(y,y2),w:Math.abs(x2-x),h:Math.abs(y2-y)};}
+function drawColorbar(){
+  const cv=$('#cbar'),ctx=cv.getContext('2d');
+  for(let x=0;x<cv.width;x++){const[r,g,b]=cmap(STATE.palette,x/cv.width);ctx.fillStyle=`rgb(${r|0},${g|0},${b|0})`;ctx.fillRect(x,0,1,cv.height);}
+}
+
+/* full redraw of echogram tab */
+function refreshEchogram(){ const eb=document.getElementById('egError'); if(eb)eb.remove(); const rd=document.getElementById('readout'); if(rd)rd.style.display=''; if(!STATE.grid)return; renderEchogramBitmap(); drawEchogram(); drawColorbar(); }
+function showEgError(errs){
+  const wrap=$('#egwrap'); const rd=$('#readout'); if(rd)rd.style.display='none';
+  let box=document.getElementById('egError');
+  if(!box){box=document.createElement('div');box.id='egError';box.style.cssText='position:absolute;inset:24px;display:flex;align-items:center;justify-content:center;text-align:center;padding:28px;color:#ffcf8a;background:rgba(20,12,4,.72);border:1px solid #5a4415;border-radius:12px;font-size:13px;line-height:1.65';wrap.appendChild(box);}
+  box.innerHTML='<div><div style="font-size:30px;margin-bottom:12px">\u26a0\ufe0f</div><b>Could not read the dropped file(s)</b><br><br>'+errs.map(e=>String(e).replace(/</g,'&lt;')).join('<br><br>')+'</div>';
+}
+
+/* ==========================================================================
+   6. INTERACTIONS (echogram)
+   ========================================================================== */
+function pxFrac(e){const wrap=$('#egwrap'),rc=wrap.getBoundingClientRect(),W=wrap.clientWidth,H=wrap.clientHeight;
+  const pw=W-AX.left-AX.right,ph=H-AX.top-AX.bottom,px=e.clientX-rc.left,py=e.clientY-rc.top;
+  return {fx:clamp((px-AX.left)/pw,0,1),fy:clamp((py-AX.top)/ph,0,1),inPlot:px>=AX.left&&px<=AX.left+pw&&py>=AX.top&&py<=AX.top+ph};}
+function viewCoord(fx,fy){const v=STATE.view;return {x:v.x0+(v.x1-v.x0)*fx,y:v.y0+(v.y1-v.y0)*fy};}
+let panStart=null;
+function initEgEvents(){
+  const cv=$('#egCanvas');
+  cv.addEventListener('mousemove',e=>{
+    if(!STATE.grid)return; const f=pxFrac(e);
+    if(f.inPlot){
+      const g=STATE.grid,ti=clamp(Math.round((STATE.view.x0+(STATE.view.x1-STATE.view.x0)*f.fx)*(g.nT-1)),0,g.nT-1),
+            bi=clamp(Math.round((STATE.view.y0+(STATE.view.y1-STATE.view.y0)*f.fy)*(g.nB-1)),0,g.nB-1);
+      const sv=g.sv[ti*g.nB+bi];
+      $('#readout').innerHTML=`Sv <b>${fmt(sv,1)}</b> dB · depth <b>${fmt(g.depth[bi],1)}</b> m<br>R ${fmt(g.range[bi],1)} m · ${new Date(g.time[ti]).toISOString().slice(11,19)}`;
+    }
+    if(dragRegion&&panStart){const c=viewCoord(f.fx,f.fy);dragRegion.x1=c.x;dragRegion.y1=c.y;drawEchogram();}
+    else if(STATE.tool==='pan'&&panStart){
+      const dx=(f.fx-panStart.fx)*(STATE.view.x1-STATE.view.x0), dy=(f.fy-panStart.fy)*(STATE.view.y1-STATE.view.y0);
+      let nv={...STATE.view}; const w=nv.x1-nv.x0,h=nv.y1-nv.y0;
+      nv.x0=clamp(panStart.v.x0-dx,0,1-w);nv.x1=nv.x0+w;nv.y0=clamp(panStart.v.y0-dy,0,1-h);nv.y1=nv.y0+h;
+      STATE.view=nv;drawEchogram();
+    }
+  });
+  cv.addEventListener('mousedown',e=>{if(!STATE.grid)return;const f=pxFrac(e);if(!f.inPlot)return;
+    if(STATE.tool==='region'){const c=viewCoord(f.fx,f.fy);dragRegion={x0:c.x,y0:c.y,x1:c.x,y1:c.y};panStart=f;}
+    else if(STATE.tool==='zoom'){dragRegion={zoom:true,x0:viewCoord(f.fx,f.fy).x,y0:viewCoord(f.fx,f.fy).y,x1:viewCoord(f.fx,f.fy).x,y1:viewCoord(f.fx,f.fy).y};panStart=f;}
+    else {panStart={...f,v:{...STATE.view}};}
+  });
+  window.addEventListener('mouseup',e=>{
+    if(dragRegion&&panStart){
+      const f=pxFrac(e);
+      if(dragRegion.zoom){const a=dragRegion,c=viewCoord(f.fx,f.fy);
+        const x0=Math.min(a.x0,c.x),x1=Math.max(a.x0,c.x),y0=Math.min(a.y0,c.y),y1=Math.max(a.y0,c.y);
+        if(x1-x0>0.01&&y1-y0>0.01){STATE.view={x0,x1,y0,y1};}
+        dragRegion=null;panStart=null;refreshEchogram();return;
+      } else {
+        const a=dragRegion;
+        if(Math.abs(a.x1-a.x0)>0.005&&Math.abs(a.y1-a.y0)>0.005){
+          const r={x0:Math.min(a.x0,a.x1),x1:Math.max(a.x0,a.x1),y0:Math.min(a.y0,a.y1),y1:Math.max(a.y0,a.y1),
+                   cls:'zooplankton',name:'R'+(STATE.annotations.length+1),note:''};
+          STATE.annotations.push(r); toast('Region added — see Annotations tab');
+        }
+      }
+    }
+    dragRegion=null;panStart=null;drawEchogram();
+  });
+  cv.addEventListener('wheel',e=>{if(!STATE.grid)return;e.preventDefault();const f=pxFrac(e);if(!f.inPlot)return;
+    const v=STATE.view,factor=e.deltaY<0?0.85:1.18;
+    const cx=v.x0+(v.x1-v.x0)*f.fx, cy=v.y0+(v.y1-v.y0)*f.fy;
+    let w=clamp((v.x1-v.x0)*factor,0.02,1), h=clamp((v.y1-v.y0)*factor,0.02,1);
+    let x0=clamp(cx-(cx-v.x0)*factor,0,1-w), y0=clamp(cy-(cy-v.y0)*factor,0,1-h);
+    STATE.view={x0,x1:x0+w,y0,y1:y0+h};refreshEchogram();
+  },{passive:false});
+}
+
+/* ==========================================================================
+   7. TAB VIEWS
+   ========================================================================== */
+function switchTab(v){
+  $$('.tab').forEach(t=>t.classList.toggle('on',t.dataset.v===v));
+  $$('.view').forEach(s=>s.style.display=(s.dataset.view===v)?(s.dataset.view==='echogram'?'flex':'block'):'none');
+  if(v==='echogram') requestAnimationFrame(()=>requestAnimationFrame(refreshEchogram));
+  if(v==='vdist') renderVDist();
+  if(v==='ancillary') renderAncillary();
+  if(v==='annot') renderAnnot();
+  if(v==='batch') renderBatch();
+  if(v==='methods') renderMethods();
+}
+
+/* --- simple canvas line/area chart helper --- */
+function lineChart(canvas,series,opts={}){
+  const dpr=window.devicePixelRatio||1,W=canvas.clientWidth,H=canvas.clientHeight;
+  canvas.width=W*dpr;canvas.height=H*dpr;const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,W,H);
+  const m={l:opts.l||46,r:opts.r||12,t:14,b:opts.b||26},pw=W-m.l-m.r,ph=H-m.t-m.b;
+  let xs=opts.xmin,xe=opts.xmax,ys=opts.ymin,ye=opts.ymax;
+  const all=[].concat(...series.map(s=>s.pts));
+  if(xs==null)xs=Math.min(...all.map(p=>p[0])); if(xe==null)xe=Math.max(...all.map(p=>p[0]));
+  if(ys==null)ys=Math.min(...all.map(p=>p[1])); if(ye==null)ye=Math.max(...all.map(p=>p[1]));
+  if(ys===ye){ye+=1;ys-=1;}
+  const flipY=opts.flipY;
+  const X=x=>m.l+(x-xs)/((xe-xs)||1)*pw, Y=y=>flipY?m.t+(y-ys)/((ye-ys)||1)*ph:m.t+ph-(y-ys)/((ye-ys)||1)*ph;
+  ctx.strokeStyle='#2a3646';ctx.fillStyle='#8b98a9';ctx.font='10px sans-serif';ctx.lineWidth=1;
+  ctx.strokeRect(m.l,m.t,pw,ph);
+  ctx.textAlign='right';ctx.textBaseline='middle';
+  for(let k=0;k<=4;k++){const val=ys+(ye-ys)*k/4;const yy=flipY?m.t+(k/4)*ph:m.t+ph-(k/4)*ph;
+    ctx.strokeStyle='rgba(255,255,255,.05)';ctx.beginPath();ctx.moveTo(m.l,yy);ctx.lineTo(m.l+pw,yy);ctx.stroke();
+    ctx.fillStyle='#8b98a9';ctx.fillText(fmt(val,opts.yd??1),m.l-5,yy);}
+  ctx.textAlign='center';ctx.textBaseline='top';
+  for(let k=0;k<=5;k++){const val=xs+(xe-xs)*k/5;ctx.fillText(opts.xfmt?opts.xfmt(val):fmt(val,0),m.l+pw*k/5,m.t+ph+5);}
+  if(opts.xlabel){ctx.fillStyle='#c6d2df';ctx.fillText(opts.xlabel,m.l+pw/2,H-12);}
+  if(opts.ylabel){ctx.save();ctx.translate(11,m.t+ph/2);ctx.rotate(-Math.PI/2);ctx.textAlign='center';ctx.textBaseline='top';ctx.fillStyle='#c6d2df';ctx.fillText(opts.ylabel,0,0);ctx.restore();}
+  series.forEach(s=>{
+    ctx.strokeStyle=s.color||'#4cc4ff';ctx.lineWidth=s.w||1.6;ctx.beginPath();let started=false;
+    s.pts.forEach(p=>{if(!isFinite(p[1])){started=false;return;}const x=X(p[0]),y=Y(p[1]);if(!started){ctx.moveTo(x,y);started=true;}else ctx.lineTo(x,y);});
+    ctx.stroke();
+    if(s.fill){ctx.lineTo(X(s.pts[s.pts.length-1][0]),Y(ys));ctx.lineTo(X(s.pts[0][0]),Y(ys));ctx.closePath();ctx.fillStyle=s.fill;ctx.fill();}
+  });
+  return {X,Y};
+}
+
+/* ---- Vertical distribution tab ---- */
+function renderVDist(){
+  const el=$('#vdistBody');
+  if(!STATE.grid){el.innerHTML=emptyMsg();return;}
+  const prof=meanSvProfile();
+  const svDb=[]; for(let i=0;i<prof.svLin.length;i++) svDb.push([10*log10(prof.svLin[i]||1e-12),prof.depth[i]]);
+  const idx=distIndices(prof.depth,prof.svLin,STATE.grid.dz);
+  const cms=cmSeries();
+  el.innerHTML=`
+    <div class="banner" id="calBannerV"></div>
+    <div class="grid3" style="margin-bottom:14px">
+      ${metricCard('Center of mass',fmt(idx.cm,1),'m — weighted mean depth of backscatter')}
+      ${metricCard('Inertia',fmt(idx.inertia,1),'m — vertical spread (SD) about CM')}
+      ${metricCard('Index of aggregation',fmt(idx.aggIdx,3),'higher = more patchy / concentrated')}
+      ${metricCard('Equivalent area',fmt(idx.eqArea,1),'m — occupied vertical extent')}
+      ${metricCard('Layer NASC',fmt(idx.NASC,1),'m²/nmi² — integrated backscatter')}
+      ${metricCard('Mean Sv',fmt(idx.svMean,1),'dB re 1 m⁻¹ — over visible window')}
+    </div>
+    <div class="grid2">
+      <div class="card"><h4>Mean Sv vs depth</h4><div class="sub">Averaged across the currently visible time window (${prof.t0}–${prof.t1} pings)</div><canvas id="cProf" class="chartbox"></canvas></div>
+      <div class="card"><h4>Diel vertical migration — center of mass vs time</h4><div class="sub">Backscatter-weighted mean depth per ping</div><canvas id="cDVM" class="chartbox"></canvas></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h4>Depth-layer table</h4><div class="sub">Metrics per fixed depth stratum over the visible window</div>
+      <div style="max-height:230px;overflow:auto"><table id="layerTbl"></table></div>
+      <div class="btnrow"><button id="expLayers">⇩ Export layers CSV</button></div>
+    </div>`;
+  const cal=calStatus(); $('#calBannerV').outerHTML = cal? `<div class="banner">${cal}</div>`:'';
+  lineChart($('#cProf'),[{pts:svDb,color:'#57e6a5',w:1.8}],{flipY:true,xlabel:'Sv (dB re 1 m⁻¹)',ylabel:'Depth (m)',xmin:+$('#svMin').value,xmax:+$('#svMax').value,ymin:Math.min(...prof.depth),ymax:Math.max(...prof.depth),yd:1});
+  const dvm=[];for(let t=0;t<cms.t.length;t++)dvm.push([cms.t[t],cms.cm[t]]);
+  lineChart($('#cDVM'),[{pts:dvm,color:'#4cc4ff',w:1.6}],{flipY:true,ylabel:'CM depth (m)',xfmt:v=>new Date(v).toISOString().slice(11,16)});
+  // layer table
+  const layers=layerMetrics(prof.depth,prof.svLin,STATE.grid.dz,10);
+  $('#layerTbl').innerHTML=`<thead><tr><th>Depth band (m)</th><th class="num">Mean Sv</th><th class="num">NASC</th><th class="num">% of total</th></tr></thead><tbody>`+
+    layers.map(L=>`<tr><td>${fmt(L.z0,0)}–${fmt(L.z1,0)}</td><td class="num">${fmt(L.svMean,1)}</td><td class="num">${fmt(L.nasc,1)}</td><td class="num">${fmt(L.pct,1)}</td></tr>`).join('')+`</tbody>`;
+  $('#expLayers').onclick=()=>downloadCSV('azfp_layers.csv',
+    [['depth_min_m','depth_max_m','mean_sv_db','nasc_m2_nmi2','pct_total']].concat(layers.map(L=>[fmt(L.z0,1),fmt(L.z1,1),fmt(L.svMean,2),fmt(L.nasc,2),fmt(L.pct,2)])));
+}
+function layerMetrics(depth,svLin,dz,nbands){
+  const zmin=Math.min(...depth),zmax=Math.max(...depth),step=(zmax-zmin)/nbands,out=[];
+  let totalNasc=0; for(let i=0;i<svLin.length;i++) if(isFinite(svLin[i])) totalNasc+=svLin[i]*dz;
+  totalNasc*=4*Math.PI*1852*1852;
+  for(let b=0;b<nbands;b++){
+    const z0=zmin+b*step,z1=z0+step; let sum=0,cnt=0,nasc=0;
+    for(let i=0;i<depth.length;i++){const z=depth[i];if(z>=Math.min(z0,z1)&&z<Math.max(z0,z1)&&isFinite(svLin[i])){sum+=svLin[i];cnt++;nasc+=svLin[i]*dz;}}
+    nasc*=4*Math.PI*1852*1852;
+    out.push({z0:Math.min(z0,z1),z1:Math.max(z0,z1),svMean:cnt?10*log10(sum/cnt):NaN,nasc,pct:totalNasc?100*nasc/totalNasc:0});
+  }
+  return out.sort((a,b)=>a.z0-b.z0);
+}
+function metricCard(lbl,val,sub){return `<div class="card metric"><span class="lbl">${lbl}</span><span class="big">${val}</span><span class="lbl">${sub}</span></div>`;}
+function emptyMsg(){return `<div class="empty"><div style="font-size:32px">📡</div><div>No data yet. Load AZFP <b>.01A</b> files or click <b>Demo</b>.</div></div>`;}
+
+/* ---- Ancillary tab ---- */
+function renderAncillary(){
+  const el=$('#ancBody');
+  if(!STATE.anc){el.innerHTML=emptyMsg();return;}
+  const a=STATE.anc;
+  el.innerHTML=`
+    <div class="banner">Ancillary channels are decoded with <b>default</b> sensor coefficients (tilt, thermistor Steinhart–Hart, pressure, battery). Load the instrument .XML to apply factory coefficients. Values are indicative until then.</div>
+    <div class="grid2">
+      <div class="card"><h4>Temperature</h4><div class="sub">°C — thermistor</div><canvas id="acTemp" class="chartbox"></canvas></div>
+      <div class="card"><h4>Tilt</h4><div class="sub">degrees — X, Y, and magnitude</div><canvas id="acTilt" class="chartbox"></canvas></div>
+      <div class="card"><h4>Pressure / depth proxy</h4><div class="sub">dbar</div><canvas id="acPres" class="chartbox"></canvas></div>
+      <div class="card"><h4>Battery</h4><div class="sub">Volts</div><canvas id="acBatt" class="chartbox"></canvas></div>
+    </div>
+    <div class="btnrow" style="margin-top:12px"><button id="expAnc">⇩ Export ancillary CSV</button></div>`;
+  const xf=v=>new Date(v).toISOString().slice(11,16);
+  lineChart($('#acTemp'),[{pts:a.t.map((t,i)=>[t,a.temp[i]]),color:'#ffb454'}],{xfmt:xf,ylabel:'°C'});
+  lineChart($('#acTilt'),[
+    {pts:a.t.map((t,i)=>[t,a.tiltx[i]]),color:'#4cc4ff',w:1.2},
+    {pts:a.t.map((t,i)=>[t,a.tilty[i]]),color:'#57e6a5',w:1.2},
+    {pts:a.t.map((t,i)=>[t,a.tiltmag[i]]),color:'#ff6b6b',w:1.6}],{xfmt:xf,ylabel:'deg'});
+  lineChart($('#acPres'),[{pts:a.t.map((t,i)=>[t,a.pres[i]]),color:'#c77dff',fill:'#c77dff22'}],{xfmt:xf,flipY:true,ylabel:'dbar'});
+  lineChart($('#acBatt'),[{pts:a.t.map((t,i)=>[t,a.batt[i]]),color:'#57e6a5'}],{xfmt:xf,ylabel:'V'});
+  $('#expAnc').onclick=()=>downloadCSV('azfp_ancillary.csv',
+    [['time_utc','temp_c','tilt_x_deg','tilt_y_deg','tilt_mag_deg','pressure_dbar','battery_v']].concat(
+      a.t.map((t,i)=>[new Date(t).toISOString(),fmt(a.temp[i],3),fmt(a.tiltx[i],2),fmt(a.tilty[i],2),fmt(a.tiltmag[i],2),fmt(a.pres[i],2),fmt(a.batt[i],2)])));
+}
+
+/* ---- Annotations tab ---- */
+function renderAnnot(){
+  const el=$('#annotBody');
+  const rows=STATE.annotations.map((r,i)=>{
+    const st=regionStats(r);
+    return `<tr>
+      <td><span class="swatch" style="background:${CLASS_COLORS[r.cls]||'#4cc4ff'}"></span><input value="${r.name||''}" data-i="${i}" data-k="name" style="width:90px"/></td>
+      <td><select data-i="${i}" data-k="cls">${Object.keys(CLASS_COLORS).map(c=>`<option ${c===r.cls?'selected':''}>${c}</option>`).join('')}</select></td>
+      <td class="num">${fmt(st.z0,1)}–${fmt(st.z1,1)}</td>
+      <td>${new Date(st.t0).toISOString().slice(11,16)}–${new Date(st.t1).toISOString().slice(11,16)}</td>
+      <td class="num">${fmt(st.svMean,1)}</td>
+      <td class="num">${fmt(st.nasc,1)}</td>
+      <td class="num">${fmt(st.cm,1)}</td>
+      <td><input value="${r.note||''}" data-i="${i}" data-k="note" placeholder="note" style="width:120px"/></td>
+      <td><span class="rm" data-del="${i}" style="cursor:pointer;color:var(--bad)">✕</span></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML=`
+    <div class="card"><h4>Region annotations & classification</h4>
+    <div class="sub">Select the <b>▭ Region</b> tool on the Echogram tab and drag a box. Stats recompute from the calibrated Sv grid.</div>
+    ${STATE.annotations.length?`<table><thead><tr><th>Name</th><th>Class</th><th class="num">Depth (m)</th><th>Time</th><th class="num">Mean Sv</th><th class="num">NASC</th><th class="num">CM (m)</th><th>Note</th><th></th></tr></thead><tbody>${rows}</tbody></table>`:`<div class="mini">No regions yet.</div>`}
+    <div class="btnrow" style="margin-top:12px">
+      <button id="expRegions">⇩ Export regions CSV</button>
+      <button id="expRegionsJson" class="ghost">⇩ Regions JSON</button>
+      <button id="clearRegions" class="ghost">Clear all</button>
+    </div></div>`;
+  $$('#annotBody input,#annotBody select').forEach(inp=>inp.onchange=e=>{const i=+e.target.dataset.i,k=e.target.dataset.k;STATE.annotations[i][k]=e.target.value;renderAnnot();});
+  $$('#annotBody [data-del]').forEach(x=>x.onclick=e=>{STATE.annotations.splice(+e.target.dataset.del,1);renderAnnot();});
+  const ex=$('#expRegions'); if(ex) ex.onclick=exportRegionsCSV;
+  const exj=$('#expRegionsJson'); if(exj) exj.onclick=()=>downloadText('azfp_regions.json',JSON.stringify(STATE.annotations.map(r=>({...r,stats:regionStats(r)})),null,2));
+  const cr=$('#clearRegions'); if(cr) cr.onclick=()=>{STATE.annotations=[];renderAnnot();};
+}
+function regionStats(r){
+  const g=STATE.grid; if(!g)return{};
+  const t0=Math.round(Math.min(r.x0,r.x1)*(g.nT-1)),t1=Math.round(Math.max(r.x0,r.x1)*(g.nT-1));
+  const b0=Math.round(Math.min(r.y0,r.y1)*(g.nB-1)),b1=Math.round(Math.max(r.y0,r.y1)*(g.nB-1));
+  let sum=0,cnt=0,sumZ=0,nasc=0;
+  for(let t=t0;t<=t1;t++)for(let i=b0;i<=b1;i++){const s=Math.pow(10,g.sv[t*g.nB+i]/10);sum+=s;cnt++;sumZ+=g.depth[i]*s;nasc+=s*g.dz;}
+  const cols=(t1-t0+1)||1;
+  return {z0:g.depth[b0],z1:g.depth[b1],t0:g.time[t0],t1:g.time[t1],
+    svMean:cnt?10*log10(sum/cnt):NaN,cm:sum>0?sumZ/sum:NaN,nasc:4*Math.PI*1852*1852*nasc/cols};
+}
+function exportRegionsCSV(){
+  downloadCSV('azfp_regions.csv',[['name','class','depth_min_m','depth_max_m','time_start','time_end','mean_sv_db','cm_m','nasc_m2_nmi2','note']]
+    .concat(STATE.annotations.map(r=>{const s=regionStats(r);return [r.name,r.cls,fmt(s.z0,1),fmt(s.z1,1),new Date(s.t0).toISOString(),new Date(s.t1).toISOString(),fmt(s.svMean,2),fmt(s.cm,2),fmt(s.nasc,2),r.note||''];})));
+}
+
+/* ---- Automation / Batch tab ---- */
+function renderBatch(){
+  const el=$('#batchBody');
+  const nFiles=STATE.files.filter(f=>f.type==='data').length;
+  el.innerHTML=`
+    <div class="card"><h4>Batch automation</h4>
+    <div class="sub">Process every loaded .01A file, then export machine-readable products for downstream pipelines.</div>
+    <div class="kv"><span>Data files loaded</span><span>${nFiles}</span></div>
+    <div class="kv"><span>Total pings decoded</span><span>${STATE.pings.length}</span></div>
+    <div class="kv"><span>Active channel</span><span>${STATE.channels[STATE.chan]?.freq||'—'} kHz</span></div>
+    <div class="kv"><span>Time span</span><span>${STATE.pings.length?new Date(STATE.pings[0].time).toISOString().slice(0,16)+' → '+new Date(STATE.pings.at(-1).time).toISOString().slice(11,16):'—'}</span></div>
+    <div class="btnrow" style="margin-top:14px">
+      <button class="primary" id="runBatch">▶ Run batch analysis</button>
+      <button id="expGrid">⇩ Sv grid (CSV)</button>
+      <button id="expCM">⇩ CM/NASC time series</button>
+      <button id="expReport">⇩ Session report (JSON)</button>
+    </div>
+    <div id="batchOut" style="margin-top:14px"></div></div>
+    <div class="card" style="margin-top:14px"><h4>Scheduling & integration</h4>
+    <div class="sub">The exports below are plain CSV/JSON keyed by UTC time, ready for R, Python, Echoview, or a cron/Task-Scheduler job. Project files (left panel) round-trip the full analysis state.</div>
+    <div class="mini">Suggested pipeline: <span class="tag">.01A → Process</span> <span class="tag">export CM/NASC</span> <span class="tag">append to deployment archive</span> <span class="tag">plot DVM season</span></div>
+    </div>`;
+  $('#runBatch').onclick=()=>{
+    if(!STATE.grid){toast('Load & process data first');return;}
+    const cms=cmSeries(); const prof=meanSvProfile(); const idx=distIndices(prof.depth,prof.svLin,STATE.grid.dz);
+    let validCM=[...cms.cm].filter(isFinite);
+    $('#batchOut').innerHTML=`<div class="banner" style="background:linear-gradient(90deg,#12321f,#102a1a);border-color:#1f5a35;color:#a5e6bf">
+      ✓ Processed ${STATE.pings.length} pings · ${STATE.grid.nT} profiles × ${STATE.grid.nB} bins.<br>
+      Mean CM depth ${fmt(validCM.reduce((a,b)=>a+b,0)/validCM.length,1)} m · CM range ${fmt(Math.min(...validCM),1)}–${fmt(Math.max(...validCM),1)} m · window mean Sv ${fmt(idx.svMean,1)} dB.</div>`;
+  };
+  $('#expGrid').onclick=exportGridCSV;
+  $('#expCM').onclick=()=>{const c=cmSeries();downloadCSV('azfp_cm_nasc_timeseries.csv',[['time_utc','cm_depth_m','nasc_m2_nmi2']].concat(c.t.map((t,i)=>[new Date(t).toISOString(),fmt(c.cm[i],2),fmt(c.nasc[i],2)])));};
+  $('#expReport').onclick=exportReport;
+}
+function exportGridCSV(){
+  const g=STATE.grid; if(!g){toast('No grid');return;}
+  const head=['time_utc\\depth_m'].concat([...g.depth].map(d=>fmt(d,1)));
+  const rows=[head];
+  for(let t=0;t<g.nT;t++){const r=[new Date(g.time[t]).toISOString()];for(let i=0;i<g.nB;i++)r.push(fmt(g.sv[t*g.nB+i],2));rows.push(r);}
+  downloadCSV('azfp_sv_grid.csv',rows);
+}
+function exportReport(){
+  const g=STATE.grid; const prof=g?meanSvProfile():null; const idx=prof?distIndices(prof.depth,prof.svLin,g.dz):{};
+  const rep={generated:new Date().toISOString(),app:'AZFP Studio',
+    deployment:{orientation:g?.orient,instrument_depth_m:g?.dep,channel_khz:STATE.channels[STATE.chan]?.freq},
+    calibration:currentCal(),
+    coverage:g?{profiles:g.nT,bins:g.nB,bin_thickness_m:g.dz,start_range_m:g.startR,time_start:new Date(g.time[0]).toISOString(),time_end:new Date(g.time.at(-1)).toISOString()}:null,
+    distribution_window:idx,
+    annotations:STATE.annotations.map(r=>({...r,stats:regionStats(r)}))};
+  downloadText('azfp_session_report.json',JSON.stringify(rep,null,2));
+}
+
+/* ---- Methods tab ---- */
+function renderMethods(){
+  $('#methodsBody').innerHTML=`
+  <h2>Methods & references</h2>
+  <p>AZFP Studio reads raw ASL Environmental Sciences <b>Acoustic Zooplankton Fish Profiler</b> data files and converts recorded counts to calibrated volume backscattering strength for the analysis of vertical target distribution (e.g. zooplankton layers and diel vertical migration).</p>
+
+  <h3>1 · File parsing</h3>
+  <p>Data files (<code>.01A</code>…<code>.06A</code>) store consecutive ping records in <b>big-endian</b> byte order. Each record begins with the flag <code>0xFD02</code> followed by a 124-byte header (profile/serial number, UTC timestamp to 1/100 s, per-channel digitization rate, lockout, number of bins, range samples per bin, pulse length, board and frequency, plus five ancillary sensor counts and two A/D words). The header is followed by <code>num_bins</code> amplitude samples per channel. Sample width (16- or 32-bit summed/averaged counts) is auto-detected from the record stride. This layout matches the ASL "Compact Flash" specification implemented by the open-source <code>echopype</code> reader.</p>
+
+  <h3>2 · Range & depth</h3>
+  <div class="eq">bin_thickness  Δz = range_samples_per_bin · c / (2 · digitization_rate)
+range Rᵢ      = lockout·c/(2·dig_rate) + (i + ½)·Δz
+depth (up)    = instrument_depth − Rᵢ
+depth (down)  = instrument_depth + Rᵢ</div>
+  <p>Sound speed <code>c</code> defaults to 1500 m/s and is editable. Orientation (up- or down-looking) and instrument depth are set in the Deployment panel.</p>
+
+  <h3>3 · Volume backscattering strength (Sv)</h3>
+  <p>Counts are converted to Sv following the ASL / Echoview AZFP equation:</p>
+  <div class="eq">Sv = EL − 2.5/DS + N/(26214·DS) − TVR − 20·log₁₀(VTX0)
+     + 20·log₁₀(R) + 2·α·R − 10·log₁₀( c·τ / 2 ) − Ψ</div>
+  <p>where <b>N</b> is the recorded count (averaged data is back-converted to N), <b>EL</b> the echo level at saturation, <b>DS</b> the detector slope, <b>TVR</b> the transmit voltage response, <b>VTX0</b> the transmit voltage, <b>R</b> range, <b>α</b> the absorption coefficient, <b>τ</b> the pulse duration, and <b>Ψ</b> = 10·log₁₀ψ the equivalent two-way beam angle (dB re 1 sr, the <code>EBA</code> field). Target strength uses spherical spreading with no volume term:</p>
+  <div class="eq">TS = EL − 2.5/DS + N/(26214·DS) − TVR − 20·log₁₀(VTX0) + 40·log₁₀(R) + 2·α·R</div>
+  <p>TVG range correction is not applied, consistent with Echoview's AZFP implementation. Absorption α can be entered directly or taken from the instrument log.</p>
+
+  <h3>4 · Vertical target-distribution metrics</h3>
+  <p>Over a chosen depth range and time window, indices are computed on <b>linear</b> s<sub>v</sub> = 10<sup>Sv/10</sup>:</p>
+  <div class="eq">Center of mass  CM = Σ(zᵢ·sᵥᵢ) / Σsᵥᵢ
+Inertia         I  = √[ Σ((zᵢ−CM)²·sᵥᵢ) / Σsᵥᵢ ]
+Index of aggregation = Σsᵥᵢ² / (Σsᵥᵢ)²
+Equivalent area = (Σsᵥᵢ)² / Σsᵥᵢ²  · Δz
+NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
+  <p>Center of mass and inertia (after Woillez et al. 2007) summarise the mean depth and vertical spread of scatterers; the index of aggregation and equivalent area (Bez &amp; Rivoirard) describe patchiness. NASC is the standard area backscattering coefficient used for biomass work. The center-of-mass time series is the primary diagnostic for diel vertical migration.</p>
+
+  <h3>5 · Ancillary sensors</h3>
+  <p>Tilt (X/Y), thermistor temperature (Steinhart–Hart), pressure and battery are decoded from the per-ping ancillary counts. Default conversion coefficients are used until the instrument's <code>.XML</code> file is loaded, at which point factory calibration is applied. These channels support quality control — instrument tilt affects the effective sampling volume, temperature drives the absorption coefficient, and pressure/battery track deployment integrity.</p>
+
+  <h3>6 · Annotations & products</h3>
+  <p>Regions drawn on the echogram are classified (zooplankton, fish, surface/ice, bottom, noise) and summarised with mean Sv, NASC and center of mass computed directly from the calibrated grid. All state — calibration, deployment, view and annotations — round-trips through the JSON <b>project</b> file. Batch export produces the Sv grid, CM/NASC time series, layer table and a session report for downstream analysis in R, Python or Echoview.</p>
+
+  <h3>Data-integrity note</h3>
+  <p>The example files bundled with this project were altered by a text-mode transfer: high bytes (0x80–0xFF) were replaced with the Unicode replacement marker, which is <b>lossy and irreversible</b> for the acoustic amplitudes. AZFP Studio therefore ships with a synthetic demonstration deployment. Load your original binary <code>.01A</code> files (and the matching <code>.XML</code>) for real analysis — the parser reads the genuine format directly.</p>
+
+  <h3>References</h3>
+  <p>ASL Environmental Sciences — AZFP Operator's Manual & scientific post-processing notes (aslenv.com). Echoview — <i>AZFP Sv and TS</i> algorithm reference (support.echoview.com). OSOceanAcoustics <i>echopype</i> — open-source AZFP reader. Woillez M. et al. (2007) <i>ICES J. Mar. Sci.</i> spatial indicators. Bez N. &amp; Rivoirard J. — indices of aggregation.</p>
+  <p class="mini">Sources referenced during build: Echoview AZFP Sv/TS help; ASL AZFP processing page; echopype documentation.</p>`;
+}
+function calStatus(){ return STATE.xmlCal?'':'Calibration uses <b>editable placeholder</b> coefficients (representative 455 kHz values). Load the instrument .XML for quantitative Sv.'; }
+
+/* ==========================================================================
+   8. FILE I/O
+   ========================================================================== */
+function downloadText(name,text,type='text/plain'){
+  const b=new Blob([text],{type}),u=URL.createObjectURL(b),a=document.createElement('a');
+  a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);toast('Saved '+name);
+}
+function downloadCSV(name,rows){downloadText(name,rows.map(r=>r.map(c=>{c=String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(',')).join('\n'),'text/csv');}
+
+function renderFileList(){
+    $('#filelist').innerHTML=STATE.files.map((f,i)=>{const icon=f.type==='xml'?'\u2699 ':f.type==='log'?'\ud83d\udcdd ':f.type==='mfawcpl'?'\ud83d\udccb ':'\ud83d\udcca ';const span=(f._t0!=null)?(new Date(f._t0).toISOString().slice(11,16)+'\u2013'+new Date(f._t1).toISOString().slice(11,16)+' UTC'):'';const badge=f._pings?` <span class="mini">\u00b7 ${f._pings}p</span>`:'';return `<div class="filerow"><span class="nm" title="${f.name}${span?'  ('+span+')':''}">${icon}${f.name}${badge}</span><span class="rm" data-i="${i}">\u2715</span></div>`;}).join('');
+  $$('#filelist .rm').forEach(x=>x.onclick=e=>{STATE.files.splice(+e.target.dataset.i,1);renderFileList();updateProcessBtn();});
+  updateProcessBtn();
+}
+function updateProcessBtn(){$('#processBtn').disabled=!STATE.files.some(f=>f.type==='data');}
+function classifyFile(name){const n=name.toLowerCase();if(n.endsWith('.mfawcpl'))return'mfawcpl';if(/\.(0\da|azfp)$/.test(n))return'data';if(n.endsWith('.xml'))return'xml';if(n.endsWith('.log'))return'log';if(n.endsWith('.json')||n.endsWith('.azfpproj'))return'proj';return'data';}
+async function ingestFiles(fileList){
+  STATE.files=STATE.files.filter(f=>!f.demo && f.buf);   // drop the auto-loaded demo when real files arrive
+  for(const file of fileList){
+    const type=classifyFile(file.name);
+    if(type==='proj'){ const txt=await file.text(); try{loadProjectObj(JSON.parse(txt));toast('Project loaded');}catch(e){toast('Bad project file');} continue; }
+    const buf=await file.arrayBuffer();
+    STATE.files.push({name:file.name,type,buf});
+    if(type==='xml'){const cal=parseXMLcal(new TextDecoder().decode(buf));applyXMLcal(cal);}
+    if(type==='mfawcpl'){const cfg=parseMfawcpl(new TextDecoder().decode(buf));applyMfawcpl(cfg);}
+  }
+  renderFileList();
+  if(STATE.files.some(f=>f.type==='data')) processData();   // auto-process on drop/select
+  else if(STATE.pings.length){ computeGrid(); refreshEchogram(); }  // e.g. XML added to existing data
+}
+function applyXMLcal(cal){
+  if(!cal)return; STATE.xmlCal=cal; let applied=false;
+  // pick channel nearest 455 if freq present
+  let ci=0; if(cal.freq&&cal.freq.length){let bd=1e9;cal.freq.forEach((f,i)=>{const d=Math.abs(f-455);if(d<bd){bd=d;ci=i;}});}
+  const set=(id,arr)=>{if(arr&&arr[ci]!=null&&isFinite(arr[ci])){$(id).value=arr[ci];applied=true;}};
+  set('#cEL',cal.EL);set('#cDS',cal.DS);set('#cTVR',cal.TVR);set('#cVTX',cal.VTX);
+  if(cal.BP&&cal.BP[ci]!=null){$('#cEBA').value=(10*log10(cal.BP[ci])).toFixed(2);applied=true;}
+  if(applied){$('#calSrc').textContent='(from XML)';$('#calNote').textContent='Applied factory coefficients from '+ (STATE.files.find(f=>f.type==='xml')?.name||'XML')+'.';toast('XML calibration applied');}
+}
+
+function processData(){
+  const dataFiles=STATE.files.filter(f=>f.type==='data'&&f.buf);
+  if(!dataFiles.length){toast('No .01A data files loaded');return;}
+  let all=[]; const errs=[];
+  for(const f of dataFiles){ try{ const pk=parseAZFP(f.buf,f.name); f._pings=pk.length; f._t0=pk[0].time; f._t1=pk[pk.length-1].time; all=all.concat(pk); }catch(e){ f._pings=0; errs.push(e.message); } }
+  if(!all.length){ toast('Could not decode any AZFP records'); switchTab('echogram'); showEgError(errs.length?errs:['No ping records were found.']); return; }
+  all.sort((a,b)=>a.time-b.time);
+  STATE.pings=all; buildChannels(); computeGrid(); STATE.view={x0:0,x1:1,y0:0,y1:1};
+  $('#hstat').innerHTML=`<b>${all.length}</b> pings · <b>${STATE.channels.length}</b> ch · ${new Date(all[0].time).toISOString().slice(0,10)}`;
+  switchTab('echogram'); refreshEchogram();
+  toast('Processed '+all.length+' pings'+(errs.length?(' · '+errs.length+' file(s) skipped'):''));
+}
+
+/* ---- project save/load ---- */
+function saveProject(){
+  const proj={format:'azfp-studio-project',version:1,saved:new Date().toISOString(),
+    calibration:currentCal(),
+    deployment:{orient:$$('#orientSeg button').find(b=>b.classList.contains('on')).dataset.o,depth:+$('#depDepth').value,channel:STATE.chan},
+    view:STATE.view, palette:STATE.palette,
+    svMin:+$('#svMin').value,svMax:+$('#svMax').value,pingAvg:+$('#pingAvg').value,
+    annotations:STATE.annotations,
+    channels:STATE.channels,
+    // embed compact dataset so project is self-contained & portable
+    dataset: STATE.grid? packDataset() : null
+  };
+  downloadText('azfp_project.json',JSON.stringify(proj));
+}
+function packDataset(){
+  // store parsed pings compactly: counts per active workflow are large; store the Sv grid + axes
+  const g=STATE.grid;
+  return {nT:g.nT,nB:g.nB,dz:g.dz,startR:g.startR,orient:g.orient,dep:g.dep,
+    depth:[...g.depth],range:[...g.range],time:g.time,
+    sv:Array.from(g.sv,x=>Math.round(x*10)/10)};
+}
+function loadProjectObj(p){
+  if(p.calibration){const c=p.calibration;$('#cC').value=c.c;$('#cEL').value=c.EL;$('#cDS').value=c.DS;$('#cTVR').value=c.TVR;$('#cVTX').value=c.VTX0;$('#cEBA').value=c.EBA;$('#cAlpha').value=c.alpha;$('#cTau').value=Math.round(c.tau*1e6);}
+  if(p.deployment){$('#depDepth').value=p.deployment.depth;$$('#orientSeg button').forEach(b=>b.classList.toggle('on',b.dataset.o===p.deployment.orient));}
+  if(p.svMin!=null){$('#svMin').value=p.svMin;$('#svMinLbl').textContent=p.svMin;} if(p.svMax!=null){$('#svMax').value=p.svMax;$('#svMaxLbl').textContent=p.svMax;}
+  if(p.pingAvg!=null)$('#pingAvg').value=p.pingAvg;
+  if(p.palette){STATE.palette=p.palette;$('#paletteSel').value=p.palette;}
+  STATE.annotations=p.annotations||[];
+  if(p.channels)STATE.channels=p.channels;
+  if(p.dataset){
+    const d=p.dataset;
+    STATE.grid={sv:Float32Array.from(d.sv),nT:d.nT,nB:d.nB,depth:Float32Array.from(d.depth),range:Float32Array.from(d.range),time:d.time,dz:d.dz,startR:d.startR,orient:d.orient,dep:d.dep};
+    STATE.chan=p.deployment?.channel||0;
+    $('#freqPill').textContent=(STATE.channels[STATE.chan]?.freq||'—')+' kHz';
+    $('#hstat').innerHTML=`<b>${d.nT}</b> profiles · project`;
+    computeAncillaryFromGrid();
+  }
+  if(p.view)STATE.view=p.view;
+  refreshEchogram(); switchTab('echogram');
+}
+function computeAncillaryFromGrid(){ if(!STATE.anc && STATE.pings.length) computeAncillary(); }
+
+/* ==========================================================================
+   9. SYNTHETIC DEMO DATASET (realistic 455 kHz up-looking mooring, 1 day)
+   ========================================================================== */
+function makeDemo(){
+  // Config mirrors the Lac Thibeault (Chic-Chocs) .mfawcpl: freshwater, 67 + 455 kHz,
+  // dig 64 kHz, 1584 range samples / 9 averaging = 176 bins, lockout 0, up-looking.
+  const nB=176, nT=560, dig_rate=64000, range_spb=9, lockout=0;
+  const c=1450.5, dz=range_spb*c/(2*dig_rate), startR=lockout*c/(2*dig_rate), dep=18;
+  const t0=Date.UTC(2023,6,4,0,0,0), pings=[];
+  for(let t=0;t<nT;t++){
+    const time=t0+t*(86400000/nT);
+    const hourOfDay=((time-t0)/3600000)%24;
+    const solar=Math.cos((hourOfDay-13)/24*2*Math.PI);
+    const layerDepth=6+7*Math.max(0,solar);            // zooplankton layer: 6 m at night -> 13 m by day
+    const a67=new Float32Array(nB), a455=new Float32Array(nB);
+    for(let i=0;i<nB;i++){
+      const R=startR+(i+0.5)*dz, depth=dep-R;           // up-looking, shallow lake
+      const bg=1200+180*Math.random();
+      const g1=Math.exp(-((depth-layerDepth)**2)/(2*2.2*2.2));                 // migrating layer (tight in a lake)
+      const g2=Math.exp(-((depth-15)**2)/(2*2*2))*(0.3+0.7*Math.max(0,solar)); // deeper resident layer
+      const surf=Math.exp(-((depth-2)**2)/(2*1.5*1.5));                        // near-surface scattering
+      let v455=bg+g1*(22000+3000*Math.random())+g2*(9000+1500*Math.random())+surf*(4000+800*Math.random());
+      if(Math.random()<0.0006) v455+=30000*Math.random();
+      let v67=bg+g1*(9000+1500*Math.random())+g2*(6000+1000*Math.random())+surf*(2500*Math.random());
+      if(Math.random()<0.0004) v67+=34000*Math.random();
+      a455[i]=clamp(Math.round(v455),0,65535); a67[i]=clamp(Math.round(v67),0,65535);
+    }
+    const tiltx=32768+Math.round(500*Math.sin(t/50)+150*(Math.random()-0.5));
+    const tilty=32768+Math.round(350*Math.cos(t/70)+150*(Math.random()-0.5));
+    const battery=Math.round((12.6-0.4*t/nT)/13.2*65535/2.5);
+    const pressure=Math.round((dep+0.5*Math.sin(t/80))/200*65535);
+    const tempC=9+3.5*Math.sin((hourOfDay-15)/24*2*Math.PI);   // freshwater lake, warmer surface
+    const tempCount=tempCountFor(tempC);
+    const header={flag:AZFP_FLAG,profile_number:t,serial:55021,num_chan:2,
+      year:2023,month:7,day:4,hour:Math.floor(hourOfDay),minute:Math.floor((hourOfDay%1)*60),second:0,hundredths:0,
+      dig_rate:[dig_rate,dig_rate,0,0],lockout:[lockout,lockout,0,0],num_bins:[nB,nB,0,0],range_spb:[range_spb,range_spb,0,0],
+      pulse_len:[500,300,0,0],frequency:[67,455,0,0],num_acq_pings:1,avg_pings:0,ping_per_profile:150,data_type:[0,0,0,0],
+      ancillary:[tiltx,tilty,battery,pressure,tempCount],ad:[0,0]};
+    pings.push({header,chan:[a67,a455],time,src:'DEMO_LacThibeault.01A'});
+  }
+  return pings;
+}
+function tempCountFor(T){ // invert Steinhart-Hart decoder used in computeAncillary
+  const A=6.1e-4,B=2.77e-4,C=1.55e-7,Ka=1.14,Kb=2.18,Kc=1.5;
+  const Tk=T+273.15;
+  // solve A+B x + C x^3 = 1/Tk  where x=lnR
+  const target=1/Tk; let lo=-5,hi=15;
+  for(let it=0;it<60;it++){const mid=(lo+hi)/2,f=A+B*mid+C*mid*mid*mid;if(f>target)hi=mid;else lo=mid;}
+  const lnR=(lo+hi)/2, Rt=Math.exp(lnR);
+  // Rt=(Ka+Kb V)/(Kc - V) -> V=(Rt*Kc-Ka)/(Rt+Kb)
+  const V=(Rt*Kc-Ka)/(Rt+Kb);
+  return clamp(Math.round(V/2.5*65535),0,65535);
+}
+function loadDemo(){
+  STATE.files=[{name:'DEMO_LacThibeault.01A',type:'data',buf:null,demo:true}];
+  renderFileList();
+  STATE.pings=makeDemo(); buildChannels(); STATE.view={x0:0,x1:1,y0:0,y1:1};
+  // demo deployment defaults (freshwater lake, up-looking)
+  $('#cC').value=1450.5; $('#cTau').value=300; $('#cAlpha').value=freshwaterAbsorption(455,10).toFixed(3);
+  $('#depDepth').value=18; $$('#orientSeg button').forEach(b=>b.classList.toggle('on',b.dataset.o==='up'));
+  computeGrid();
+  $('#hstat').innerHTML=`<b>${STATE.pings.length}</b> pings · demo · 67+455 kHz · Lac Thibeault`;
+  refreshEchogram(); switchTab('echogram');
+  toast('Demo deployment loaded — freshwater lake, 67 + 455 kHz DVM');
+}
+
+/* ==========================================================================
+   10. WIRE-UP
+   ========================================================================== */
+function initUI(){
+  // tabs
+  $$('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.v));
+  // drop zone
+  const drop=$('#drop'),fi=$('#fileInput');
+  drop.onclick=()=>fi.click();
+  fi.onchange=e=>{ingestFiles([...e.target.files]);fi.value='';};
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hot');}));
+  drop.addEventListener('drop',e=>ingestFiles([...e.dataTransfer.files]));
+  // buttons
+  $('#processBtn').onclick=processData;
+  $('#demoBtn').onclick=loadDemo; $('#demoBtn2').onclick=loadDemo;
+  $('#clearBtn').onclick=()=>{STATE.files=[];STATE.pings=[];STATE.grid=null;STATE.anc=null;STATE.annotations=[];renderFileList();$('#hstat').textContent='No data loaded';refreshEchogram();};
+  $('#saveProj').onclick=saveProject;
+  $('#loadProj').onclick=()=>$('#projInput').click();
+  $('#projInput').onchange=async e=>{const f=e.target.files[0];if(f){try{loadProjectObj(JSON.parse(await f.text()));toast('Project loaded');}catch(err){toast('Bad project file');}}e.target.value='';};
+  // calibration + deployment recompute
+  ['cC','cEL','cDS','cTVR','cVTX','cEBA','cAlpha','cTau','depDepth'].forEach(id=>{$('#'+id).addEventListener('change',()=>{if(STATE.pings.length){computeGrid();refreshEchogram();}});});
+  $('#chanSel').onchange=e=>{STATE.chan=+e.target.value;$('#freqPill').textContent=(STATE.channels[STATE.chan]?.freq||'—')+' kHz';computeGrid();refreshEchogram();};
+  $$('#orientSeg button').forEach(b=>b.onclick=()=>{$$('#orientSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');if(STATE.pings.length){computeGrid();refreshEchogram();}});
+  // echogram toolbar
+  $('#svMin').oninput=e=>{$('#svMinLbl').textContent=e.target.value;refreshEchogram();};
+  $('#svMax').oninput=e=>{$('#svMaxLbl').textContent=e.target.value;refreshEchogram();};
+  $('#paletteSel').onchange=e=>{STATE.palette=e.target.value;refreshEchogram();};
+  $('#pingAvg').onchange=refreshEchogram;
+  $$('.tools button[data-tool]').forEach(b=>b.onclick=()=>{STATE.tool=b.dataset.tool;$$('.tools button[data-tool]').forEach(x=>x.classList.toggle('on',x===b));$('#egCanvas').style.cursor=b.dataset.tool==='region'?'crosshair':b.dataset.tool==='zoom'?'zoom-in':'grab';});
+  $('#resetView').onclick=()=>{STATE.view={x0:0,x1:1,y0:0,y1:1};refreshEchogram();};
+  $('#exportPng').onclick=()=>{const cv=$('#egCanvas');cv.toBlob(b=>{const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='azfp_echogram.png';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);});toast('Echogram PNG saved');};
+  initEgEvents();
+  window.addEventListener('resize',()=>{if($$('.tab').find(t=>t.classList.contains('on')).dataset.v==='echogram')refreshEchogram();});
+  drawColorbar();
+  renderMethods();
+}
+initUI();
+// auto-load demo so first paint is populated
+loadDemo();
+</script>
+</body>
+</html>

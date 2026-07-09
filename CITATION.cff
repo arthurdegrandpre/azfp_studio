@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use AZFP Studio in your research, please cite it."
+title: "AZFP Studio"
+abstract: >-
+  A single-file, offline browser application for reading ASL Environmental
+  Sciences AZFP (Acoustic Zooplankton Fish Profiler) data and analysing the
+  vertical distribution of acoustic targets: calibrated volume backscattering
+  strength (Sv), diel vertical migration, distribution indices, ancillary
+  sensors, region annotation, and batch export.
+authors:
+  - family-names: "de Grandpré"
+    given-names: "Arthur"
+version: 1.0.0
+date-released: "2026-07-08"
+license: MIT
+keywords:
+  - AZFP
+  - hydroacoustics
+  - zooplankton
+  - echosounder
+  - vertical distribution
+  - diel vertical migration

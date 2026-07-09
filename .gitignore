@@ -1,0 +1,15 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*~
+.vscode/
+.idea/
+
+# Node / tooling (none required to run, but ignore if used for dev)
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Scratch
+*.tmp
+_extract.js
