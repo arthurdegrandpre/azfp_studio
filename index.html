@@ -146,7 +146,8 @@ tr:hover td{background:#151d28}
       <div class="seg" id="orientSeg"><button data-o="up" class="on">Up-looking</button><button data-o="down">Down</button></div>
     </div>
     <div class="field row"><label>Instrument depth (m)</label><input type="number" id="depDepth" value="100" step="1"/></div>
-    <div class="field row"><label>Channel</label><select id="chanSel"></select></div>
+    <div class="field row"><label>Frequency</label><select id="chanSel"></select></div>
+    <div class="field row"><label title="Burst-averaged is recommended for long (multi-month) deployments; \'Every ping\' keeps full resolution but uses much more memory">Load mode</label><select id="resSel"><option value="burst">Burst-averaged</option><option value="full">Every ping</option></select></div>
 
     <div id="mfawBox" class="hidden">
       <h3>Deployment metadata <span class="mini">(.mfawcpl)</span></h3>
@@ -376,7 +377,7 @@ function applyMfawcpl(cfg){
   $('#calSrc').textContent='(mfawcpl)';
   $('#calNote').innerHTML='Sound speed, pulse length'+(cfg.soundSpeed<1480?' &amp; freshwater absorption':'')+' set from <b>'+((STATE.files.find(f=>f.type==='mfawcpl')||{}).name||'.mfawcpl')+'</b>. Load the instrument coefficient .XML for EL/DS/TVR/VTX0/BP.';
   renderMfawMeta();
-  if(STATE.pings.length){computeGrid();refreshEchogram();}
+  if(STATE.freqs.length){computeGrid();refreshEchogram();}
   toast('Applied AZFPLink deployment defaults'+(ch?(' · '+ch.freq+' kHz'):''));
 }
 function renderMfawMeta(){
@@ -409,63 +410,116 @@ function tsFromCount(N,R,cal){
 /* ==========================================================================
    3. STATE + PROCESSING
    ========================================================================== */
-const STATE={files:[],pings:[],chan:0,channels:[],grid:null,anc:null,annotations:[],
-  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null};
+/* State is organised PER FREQUENCY. Each frequency keeps its own compact Uint16
+   count grid (burst-averaged by default) with an independent time axis, so a
+   secondary transducer sampled on a different schedule (e.g. 67 kHz every few
+   hours vs 455 kHz continuously) is handled natively. Only the ACTIVE frequency
+   is materialised as a Float32 Sv grid for rendering, keeping memory bounded
+   even for multi-month deployments. */
+const STATE={files:[],freqs:[],activeFreq:0,grid:null,anc:null,annotations:[],
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'burst'};
 
-function buildChannels(){
-  const h=STATE.pings[0].header, nc=clamp(h.num_chan||1,1,4), chans=[];
-  for(let c=0;c<nc;c++) chans.push({idx:c,freq:h.frequency[c]||0,num_bins:h.num_bins[c]||0,
-    dig_rate:h.dig_rate[c]||64000,range_spb:h.range_spb[c]||1,lockout:h.lockout[c]||0,pulse:h.pulse_len[c]||300});
-  STATE.channels=chans;
-  let best=0,bd=1e9; chans.forEach((ch,i)=>{const d=Math.abs((ch.freq||0)-455);if(d<bd){bd=d;best=i;}});
-  STATE.chan=best;
-  const sel=$('#chanSel'); sel.innerHTML=chans.map((ch,i)=>`<option value="${i}">Ch ${i+1} · ${ch.freq||'?'} kHz</option>`).join('');
-  sel.value=best;
-  $('#freqPill').textContent=(chans[best].freq||'—')+' kHz';
+// Burst-grouping parameters (memory management)
+const BURST={gap:90000, maxMs:1200000, maxPings:1000, fullMaxCols:400000};
+
+/* growable Uint16 row store — the compact per-frequency count grid */
+function RowStore(nB){this.nB=nB;this.n=0;this.cap=512;this.buf=new Uint16Array(this.cap*nB);}
+RowStore.prototype.push=function(row){
+  if(this.n>=this.cap){this.cap*=2;const b=new Uint16Array(this.cap*this.nB);b.set(this.buf);this.buf=b;}
+  const o=this.n*this.nB; for(let i=0;i<this.nB;i++){let v=Math.round(row[i]); this.buf[o+i]=v<0?0:v>65535?65535:v;}
+  this.n++;
+};
+RowStore.prototype.done=function(){ return this.buf.slice(0,this.n*this.nB); };
+
+function newAcc(){ return {F:new Map(), truncated:false}; }
+function flushBurst(a){
+  if(a.cnt<=0)return;
+  const row=new Float32Array(a.nB); for(let i=0;i<a.nB;i++) row[i]=a.sum[i]/a.cnt; a.rows.push(row);
+  a.times.push(a.tSum/a.cnt); a.srcs.push(a.src);
+  const ar=new Float32Array(5); for(let k=0;k<5;k++) ar[k]=a.ancSum[k]/a.cnt; a.ancRows.push(ar);
+  a.sum=null;a.ancSum=null;a.cnt=0;a.tSum=0;
 }
+/* route one ping's channels into per-frequency burst accumulators */
+function routePing(acc, ping){
+  const h=ping.header, nc=clamp(h.num_chan||1,1,4), res=STATE.resolution;
+  for(let c=0;c<nc;c++){
+    const fk=h.frequency[c]||0, nb=h.num_bins[c]||0; if(nb<=0) continue;
+    const counts=ping.chan[c]; if(!counts||counts.length!==nb) continue;
+    let a=acc.F.get(fk);
+    if(!a){ a={freq:fk,nB:nb,averaged:!!(h.data_type&&(h.data_type[c]||0)!==0),
+      geom:{dig_rate:h.dig_rate[c]||64000,range_spb:h.range_spb[c]||1,lockout:h.lockout[c]||0,pulse:h.pulse_len[c]||300},
+      rows:new RowStore(nb), times:[], srcs:[], ancRows:[], sum:null,ancSum:null,cnt:0,tSum:0,tStart:0,last:null,src:null};
+      acc.F.set(fk,a); }
+    if(nb!==a.nB) continue;                          // geometry change mid-deployment: skip mismatched
+    const anc=h.ancillary||[0,0,0,0,0];
+    if(res==='full'){
+      if(a.rows.n>=BURST.fullMaxCols){ acc.truncated=true; continue; }
+      a.rows.push(counts); a.times.push(ping.time); a.srcs.push(ping.src||'—'); a.ancRows.push(anc.slice(0,5));
+    } else {
+      const brk = a.last!==null && ((ping.time-a.last)>BURST.gap || (ping.time-a.tStart)>BURST.maxMs || a.cnt>=BURST.maxPings || a.src!==(ping.src||'—'));
+      if(brk) flushBurst(a);
+      if(a.cnt===0){ a.sum=new Float64Array(a.nB); a.ancSum=new Float64Array(5); a.src=ping.src||'—'; a.tStart=ping.time; }
+      for(let i=0;i<a.nB;i++) a.sum[i]+=counts[i];
+      for(let k=0;k<5;k++) a.ancSum[k]+=anc[k]||0;
+      a.cnt++; a.tSum+=ping.time;
+    }
+    a.last=ping.time;
+  }
+}
+function finalizeFreqs(acc){
+  if(STATE.resolution!=='full') for(const a of acc.F.values()) flushBurst(a);
+  const freqs=[];
+  for(const a of acc.F.values()){
+    freqs.push({freq:a.freq,nB:a.nB,nT:a.rows.n,averaged:a.averaged,geom:a.geom,
+      counts:a.rows.done(), time:Float64Array.from(a.times), srcs:a.srcs, ancRows:a.ancRows});
+  }
+  freqs.sort((x,y)=>x.freq-y.freq);
+  STATE.freqs=freqs;
+  let best=0,bd=1e9; freqs.forEach((f,i)=>{const d=Math.abs((f.freq||0)-455);if(d<bd){bd=d;best=i;}});
+  STATE.activeFreq=best;
+  populateFreqSelector();
+  return acc.truncated;
+}
+function populateFreqSelector(){
+  const sel=$('#chanSel'); if(!sel)return;
+  const unit=STATE.resolution==='burst'?'bursts':'pings';
+  sel.innerHTML=STATE.freqs.map((f,i)=>`<option value="${i}">${f.freq||'?'} kHz · ${f.nT.toLocaleString()} ${unit}</option>`).join('');
+  sel.value=STATE.activeFreq;
+  const af=STATE.freqs[STATE.activeFreq];
+  $('#freqPill').textContent=(af?af.freq:'—')+' kHz';
+}
+function estMemoryMB(){ let b=0; STATE.freqs.forEach(f=>{ b+=f.counts.byteLength+f.time.byteLength; }); if(STATE.grid) b+=STATE.grid.sv.byteLength; return b/1048576; }
+
+/* materialise the ACTIVE frequency's Float32 Sv grid from its compact count grid */
 function computeGrid(){
-  if(!STATE.pings.length)return;
-  const c=STATE.chan, ch=STATE.channels[c], cal=currentCal();
-  const dz=ch.range_spb*cal.c/(2*ch.dig_rate), startR=ch.lockout*cal.c/(2*ch.dig_rate), nB=ch.num_bins;
+  if(!STATE.freqs.length)return;
+  const F=STATE.freqs[STATE.activeFreq], cal=currentCal(), g=F.geom, nB=F.nB, nT=F.nT;
+  const dz=g.range_spb*cal.c/(2*g.dig_rate), startR=g.lockout*cal.c/(2*g.dig_rate);
   const range=new Float32Array(nB), depth=new Float32Array(nB);
   const orient=$$('#orientSeg button').find(b=>b.classList.contains('on')).dataset.o, dep=+$('#depDepth').value;
   for(let i=0;i<nB;i++){const R=startR+(i+0.5)*dz;range[i]=R;depth[i]=orient==='up'?(dep-R):(dep+R);}
-  const pings=STATE.pings.filter(p=>p.chan[c]&&p.chan[c].length===nB);
-  const nT=pings.length, sv=new Float32Array(nT*nB), time=new Array(nT);
-  for(let t=0;t<nT;t++){const pg=pings[t],arr=pg.chan[c],averaged=pg.avg&&pg.avg[c];time[t]=pg.time;
-    for(let i=0;i<nB;i++){ let Nc=arr[i]; if(averaged) Nc=(log10(Math.max(1,arr[i]))-2.5)*524280*cal.DS; sv[t*nB+i]=svFromCount(Nc,range[i],cal); }}
-  // Order depth ascending so the echogram shows shallow at top (standard convention)
-  if(nB>1 && depth[0]>depth[nB-1]){
-    depth.reverse(); range.reverse();
-    for(let t=0;t<nT;t++){for(let i=0,j=nB-1;i<j;i++,j--){const a=t*nB+i,b=t*nB+j,tmp=sv[a];sv[a]=sv[b];sv[b]=tmp;}}
-  }
-  const segs=[]; {let cur=null; for(let t=0;t<nT;t++){const src=pings[t].src||'\u2014'; if(!cur||cur.src!==src){cur={src,t0:t,t1:t};segs.push(cur);} else cur.t1=t;}}
+  const sv=new Float32Array(nT*nB), counts=F.counts, time=Float64Array.from(F.time), averaged=F.averaged;
+  for(let t=0;t<nT;t++){ const off=t*nB;
+    for(let i=0;i<nB;i++){ let Nc=counts[off+i]; if(averaged) Nc=(log10(Math.max(1,Nc))-2.5)*524280*cal.DS; sv[off+i]=svFromCount(Nc,range[i],cal); } }
+  if(nB>1 && depth[0]>depth[nB-1]){ depth.reverse(); range.reverse();
+    for(let t=0;t<nT;t++){for(let i=0,j=nB-1;i<j;i++,j--){const A=t*nB+i,B=t*nB+j,tmp=sv[A];sv[A]=sv[B];sv[B]=tmp;}} }
+  const segs=[]; {let cur=null; for(let t=0;t<nT;t++){const src=F.srcs[t]||'—'; if(!cur||cur.src!==src){cur={src,t0:t,t1:t};segs.push(cur);} else cur.t1=t;}}
   STATE.grid={sv,nT,nB,depth,range,time,dz,startR,orient,dep,segs};
   computeAncillary();
 }
-/* ancillary sensor decode from header.ancillary + .ad counts (per-ping) */
+/* ancillary decode from the active frequency's burst-averaged sensor counts */
 function computeAncillary(){
-  const pings=STATE.pings, n=pings.length;
+  const F=STATE.freqs[STATE.activeFreq]; if(!F){STATE.anc=null;return;}
+  const rows=F.ancRows, n=rows.length, time=F.time;
   const t=new Array(n),temp=new Float32Array(n),tiltx=new Float32Array(n),tilty=new Float32Array(n),
         batt=new Float32Array(n),pres=new Float32Array(n),tiltmag=new Float32Array(n);
   for(let k=0;k<n;k++){
-    const a=pings[k].header.ancillary||[0,0,0,0,0], ad=pings[k].header.ad||[0,0];
-    t[k]=pings[k].time;
-    // ancillary layout: [tiltX, tiltY, battery, pressure, temperature] counts (0..65535)
+    const a=rows[k]||[0,0,0,0,0]; t[k]=time[k];
     const cx=a[0],cy=a[1],cb=a[2],cp=a[3],ct=a[4];
-    // tilt: polynomial default (deg). counts centred ~32768.
-    tiltx[k]=(cx-32768)/32768*45;
-    tilty[k]=(cy-32768)/32768*45;
-    tiltmag[k]=Math.sqrt(tiltx[k]**2+tilty[k]**2);
-    // battery: count -> volts (main batt divider ~ *2.5/65535*13.2)
-    batt[k]=cb*2.5/65535*13.2;
-    // pressure: counts -> dbar (linear default a=0,b=... ~ full scale 100 dbar)
-    pres[k]=cp/65535*200;
-    // temperature: Steinhart-Hart default
-    const V=ct*2.5/65535; const Ka=1.14,Kb=2.18,Kc=1.5;
-    let Rt=(Ka+Kb*V)/(Kc-V); if(!(Rt>0))Rt=1e-6;
-    const A=6.1e-4,B=2.77e-4,C=1.55e-7,lnR=Math.log(Rt);
-    let Tk=1/(A+B*lnR+C*lnR*lnR*lnR); temp[k]=Tk-273.15;
+    tiltx[k]=(cx-32768)/32768*45; tilty[k]=(cy-32768)/32768*45; tiltmag[k]=Math.sqrt(tiltx[k]**2+tilty[k]**2);
+    batt[k]=cb*2.5/65535*13.2; pres[k]=cp/65535*200;
+    const V=ct*2.5/65535,Ka=1.14,Kb=2.18,Kc=1.5; let Rt=(Ka+Kb*V)/(Kc-V); if(!(Rt>0))Rt=1e-6;
+    const A=6.1e-4,B=2.77e-4,C=1.55e-7,lnR=Math.log(Rt); let Tk=1/(A+B*lnR+C*lnR*lnR*lnR); temp[k]=Tk-273.15;
     if(!isFinite(temp[k])) temp[k]=NaN;
   }
   STATE.anc={t,temp,tiltx,tilty,tiltmag,batt,pres};
@@ -528,16 +582,22 @@ const CLASS_COLORS={zooplankton:'#57e6a5',fish:'#ffb454','surface/ice':'#4cc4ff'
 
 function renderEchogramBitmap(){
   const g=STATE.grid; if(!g)return;
-  const avg=+$('#pingAvg').value, nT=Math.max(1,Math.floor(g.nT/avg));
-  const off=document.createElement('canvas'); off.width=nT; off.height=g.nB;
-  const ctx=off.getContext('2d'), img=ctx.createImageData(nT,g.nB);
+  // Level-of-detail: bound the offscreen bitmap width so months of profiles
+  // aggregate into <=MAXBMP columns (canvas max width is ~32k; screen is ~2k).
+  const MAXBMP=4000, userAvg=Math.max(1,+$('#pingAvg').value||1);
+  const colStep=Math.max(userAvg, Math.ceil(g.nT/MAXBMP)), nBmp=Math.max(1,Math.ceil(g.nT/colStep));
+  const off=document.createElement('canvas'); off.width=nBmp; off.height=g.nB;
+  const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,g.nB);
   const smin=+$('#svMin').value, smax=+$('#svMax').value, rng=(smax-smin)||1;
-  for(let t=0;t<nT;t++){for(let i=0;i<g.nB;i++){
-    let acc=0; for(let k=0;k<avg;k++) acc+=Math.pow(10,g.sv[(t*avg+k)*g.nB+i]/10);
-    const svA=10*log10(acc/avg), [r,gg,b]=cmap(STATE.palette,(svA-smin)/rng), idx=(i*nT+t)*4;
-    img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;
-  }}
-  ctx.putImageData(img,0,0); egImg={canvas:off,nT,nB:g.nB};
+  for(let t=0;t<nBmp;t++){
+    const c0=t*colStep, c1=Math.min(g.nT,c0+colStep);
+    for(let i=0;i<g.nB;i++){
+      let acc=0,cnt=0; for(let cc=c0;cc<c1;cc++){acc+=Math.pow(10,g.sv[cc*g.nB+i]/10);cnt++;}
+      const svA=10*log10(acc/Math.max(1,cnt)), [r,gg,b]=cmap(STATE.palette,(svA-smin)/rng), idx=(i*nBmp+t)*4;
+      img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB:g.nB};
 }
 function depthAt(fy){const g=STATE.grid,v=STATE.view,i=clamp(Math.round((v.y0+(v.y1-v.y0)*fy)*(g.nB-1)),0,g.nB-1);return g.depth[i];}
 function timeAt(fx){const g=STATE.grid,v=STATE.view,t=clamp(Math.round((v.x0+(v.x1-v.x0)*fx)*(g.nT-1)),0,g.nT-1);return g.time[t];}
@@ -833,9 +893,11 @@ function renderBatch(){
     <div class="card"><h4>Batch automation</h4>
     <div class="sub">Process every loaded .01A file, then export machine-readable products for downstream pipelines.</div>
     <div class="kv"><span>Data files loaded</span><span>${nFiles}</span></div>
-    <div class="kv"><span>Total pings decoded</span><span>${STATE.pings.length}</span></div>
-    <div class="kv"><span>Active channel</span><span>${STATE.channels[STATE.chan]?.freq||'—'} kHz</span></div>
-    <div class="kv"><span>Time span</span><span>${STATE.pings.length?new Date(STATE.pings[0].time).toISOString().slice(0,16)+' → '+new Date(STATE.pings.at(-1).time).toISOString().slice(11,16):'—'}</span></div>
+    <div class="kv"><span>Frequencies</span><span>${STATE.freqs.map(f=>f.freq+' kHz').join(', ')||'—'}</span></div>
+    <div class="kv"><span>Profiles (${STATE.resolution})</span><span>${STATE.freqs.map(f=>f.nT.toLocaleString()).join(' / ')||'—'}</span></div>
+    <div class="kv"><span>Active · grid</span><span>${STATE.freqs[STATE.activeFreq]?.freq||'—'} kHz · ${STATE.grid?STATE.grid.nT.toLocaleString()+'×'+STATE.grid.nB:'—'}</span></div>
+    <div class="kv"><span>Memory (in-app)</span><span>${estMemoryMB().toFixed(1)} MB</span></div>
+    <div class="kv"><span>Time span</span><span>${STATE.grid?new Date(STATE.grid.time[0]).toISOString().slice(0,16)+' → '+new Date(STATE.grid.time[STATE.grid.nT-1]).toISOString().slice(0,16):'—'}</span></div>
     <div class="btnrow" style="margin-top:14px">
       <button class="primary" id="runBatch">▶ Run batch analysis</button>
       <button id="expGrid">⇩ Sv grid (CSV)</button>
@@ -852,7 +914,7 @@ function renderBatch(){
     const cms=cmSeries(); const prof=meanSvProfile(); const idx=distIndices(prof.depth,prof.svLin,STATE.grid.dz);
     let validCM=[...cms.cm].filter(isFinite);
     $('#batchOut').innerHTML=`<div class="banner" style="background:linear-gradient(90deg,#12321f,#102a1a);border-color:#1f5a35;color:#a5e6bf">
-      ✓ Processed ${STATE.pings.length} pings · ${STATE.grid.nT} profiles × ${STATE.grid.nB} bins.<br>
+      ✓ ${STATE.grid.nT.toLocaleString()} profiles × ${STATE.grid.nB} bins · ${STATE.freqs[STATE.activeFreq]?.freq||''} kHz.<br>
       Mean CM depth ${fmt(validCM.reduce((a,b)=>a+b,0)/validCM.length,1)} m · CM range ${fmt(Math.min(...validCM),1)}–${fmt(Math.max(...validCM),1)} m · window mean Sv ${fmt(idx.svMean,1)} dB.</div>`;
   };
   $('#expGrid').onclick=exportGridCSV;
@@ -869,7 +931,7 @@ function exportGridCSV(){
 function exportReport(){
   const g=STATE.grid; const prof=g?meanSvProfile():null; const idx=prof?distIndices(prof.depth,prof.svLin,g.dz):{};
   const rep={generated:new Date().toISOString(),app:'AZFP Studio',
-    deployment:{orientation:g?.orient,instrument_depth_m:g?.dep,channel_khz:STATE.channels[STATE.chan]?.freq},
+    deployment:{orientation:g?.orient,instrument_depth_m:g?.dep,channel_khz:STATE.freqs[STATE.activeFreq]?.freq},
     calibration:currentCal(),
     coverage:g?{profiles:g.nT,bins:g.nB,bin_thickness_m:g.dz,start_range_m:g.startR,time_start:new Date(g.time[0]).toISOString(),time_end:new Date(g.time.at(-1)).toISOString()}:null,
     distribution_window:idx,
@@ -916,6 +978,10 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <h3>6 · Annotations & products</h3>
   <p>Regions drawn on the echogram are classified (zooplankton, fish, surface/ice, bottom, noise) and summarised with mean Sv, NASC and center of mass computed directly from the calibrated grid. All state — calibration, deployment, view and annotations — round-trips through the JSON <b>project</b> file. Batch export produces the Sv grid, CM/NASC time series, layer table and a session report for downstream analysis in R, Python or Echoview.</p>
 
+  <h3>7 · Multiple frequencies &amp; large deployments</h3>
+  <p>Each transducer frequency is handled as an <b>independent time series</b>. AZFP deployments often sample a secondary board (e.g. 67 kHz) on a coarser schedule than the primary (e.g. 455 kHz), so the two frequencies have different numbers of profiles at different times. The parser routes every ping's channels to the matching frequency, and the <b>Frequency</b> selector switches the echogram, metrics, and ancillary panels between them.</p>
+  <p>For multi-month records the app keeps memory bounded with several strategies: files are parsed one at a time and their raw bytes freed immediately after; each frequency stores its profiles as a compact <code>Uint16</code> count grid; and — in the default <b>burst-averaged</b> load mode — pings are grouped into bursts (by acquisition gaps) and averaged to one profile per burst, which is the natural long-term representation for diel-migration work. Only the active frequency is expanded to a floating-point Sv grid for display. An <b>Every-ping</b> mode preserves full resolution for shorter records. The echogram additionally uses level-of-detail rendering, aggregating profiles so the drawn image never exceeds a few thousand columns regardless of dataset length. Estimated in-app memory is shown in the header and Automation tab.</p>
+
   <h3>Data-integrity note</h3>
   <p>The example files bundled with this project were altered by a text-mode transfer: high bytes (0x80–0xFF) were replaced with the Unicode replacement marker, which is <b>lossy and irreversible</b> for the acoustic amplitudes. AZFP Studio therefore ships with a synthetic demonstration deployment. Load your original binary <code>.01A</code> files (and the matching <code>.XML</code>) for real analysis — the parser reads the genuine format directly.</p>
 
@@ -953,7 +1019,7 @@ async function ingestFiles(fileList){
   }
   renderFileList();
   if(STATE.files.some(f=>f.type==='data')) processData();   // auto-process on drop/select
-  else if(STATE.pings.length){ computeGrid(); refreshEchogram(); }  // e.g. XML added to existing data
+  else if(STATE.freqs.length){ computeGrid(); refreshEchogram(); }  // e.g. XML added to existing data
 }
 function applyXMLcal(cal){
   if(!cal)return; STATE.xmlCal=cal; let applied=false;
@@ -968,21 +1034,29 @@ function applyXMLcal(cal){
 function processData(){
   const dataFiles=STATE.files.filter(f=>f.type==='data'&&f.buf);
   if(!dataFiles.length){toast('No .01A data files loaded');return;}
-  let all=[]; const errs=[];
-  for(const f of dataFiles){ try{ const pk=parseAZFP(f.buf,f.name); f._pings=pk.length; f._t0=pk[0].time; f._t1=pk[pk.length-1].time; all=all.concat(pk); }catch(e){ f._pings=0; errs.push(e.message); } }
-  if(!all.length){ toast('Could not decode any AZFP records'); switchTab('echogram'); showEgError(errs.length?errs:['No ping records were found.']); return; }
-  all.sort((a,b)=>a.time-b.time);
-  STATE.pings=all; buildChannels(); computeGrid(); STATE.view={x0:0,x1:1,y0:0,y1:1};
-  $('#hstat').innerHTML=`<b>${all.length}</b> pings · <b>${STATE.channels.length}</b> ch · ${new Date(all[0].time).toISOString().slice(0,10)}`;
+  // AZFP filenames sort chronologically; process in order so burst grouping sees monotonic time
+  dataFiles.sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
+  const acc=newAcc(), errs=[]; let totalPings=0;
+  for(const f of dataFiles){
+    let pk; try{ pk=parseAZFP(f.buf,f.name); }catch(e){ f._pings=0; errs.push(e.message); f.buf=null; continue; }
+    f._pings=pk.length; f._t0=pk[0].time; f._t1=pk[pk.length-1].time; totalPings+=pk.length;
+    for(const ping of pk) routePing(acc,ping);
+    f.buf=null;   // free the raw file bytes immediately after parsing (memory management)
+  }
+  if(!acc.F.size){ toast('Could not decode any AZFP records'); switchTab('echogram'); showEgError(errs.length?errs:['No ping records were found.']); return; }
+  const truncated=finalizeFreqs(acc);
+  STATE.view={x0:0,x1:1,y0:0,y1:1}; computeGrid();
+  const cols=STATE.freqs.map(f=>f.nT).reduce((a,b)=>a+b,0);
+  $('#hstat').innerHTML=`<b>${totalPings.toLocaleString()}</b> pings → <b>${cols.toLocaleString()}</b> ${STATE.resolution==='burst'?'bursts':'cols'} · ${STATE.freqs.length} freq · ${estMemoryMB().toFixed(1)} MB`;
   switchTab('echogram'); refreshEchogram();
-  toast('Processed '+all.length+' pings'+(errs.length?(' · '+errs.length+' file(s) skipped'):''));
+  toast('Processed '+totalPings.toLocaleString()+' pings — '+STATE.freqs.map(f=>f.freq+' kHz: '+f.nT.toLocaleString()).join(', ')+(truncated?' · full-res cap hit':'')+(errs.length?' · '+errs.length+' skipped':''));
 }
 
 /* ---- project save/load ---- */
 function saveProject(){
   const proj={format:'azfp-studio-project',version:1,saved:new Date().toISOString(),
     calibration:currentCal(),
-    deployment:{orient:$$('#orientSeg button').find(b=>b.classList.contains('on')).dataset.o,depth:+$('#depDepth').value,channel:STATE.chan},
+    deployment:{orient:$$('#orientSeg button').find(b=>b.classList.contains('on')).dataset.o,depth:+$('#depDepth').value,channel:STATE.activeFreq},
     view:STATE.view, palette:STATE.palette,
     svMin:+$('#svMin').value,svMax:+$('#svMax').value,pingAvg:+$('#pingAvg').value,
     annotations:STATE.annotations,
@@ -996,7 +1070,7 @@ function packDataset(){
   // store parsed pings compactly: counts per active workflow are large; store the Sv grid + axes
   const g=STATE.grid;
   return {nT:g.nT,nB:g.nB,dz:g.dz,startR:g.startR,orient:g.orient,dep:g.dep,
-    depth:[...g.depth],range:[...g.range],time:g.time,
+    depth:[...g.depth],range:[...g.range],time:Array.from(g.time),
     sv:Array.from(g.sv,x=>Math.round(x*10)/10)};
 }
 function loadProjectObj(p){
@@ -1010,55 +1084,57 @@ function loadProjectObj(p){
   if(p.dataset){
     const d=p.dataset;
     STATE.grid={sv:Float32Array.from(d.sv),nT:d.nT,nB:d.nB,depth:Float32Array.from(d.depth),range:Float32Array.from(d.range),time:d.time,dz:d.dz,startR:d.startR,orient:d.orient,dep:d.dep};
-    STATE.chan=p.deployment?.channel||0;
-    $('#freqPill').textContent=(STATE.channels[STATE.chan]?.freq||'—')+' kHz';
+    STATE.activeFreq=p.deployment?.channel||0;
+    $('#freqPill').textContent=(STATE.freqs[STATE.activeFreq]?.freq||'—')+' kHz';
     $('#hstat').innerHTML=`<b>${d.nT}</b> profiles · project`;
     computeAncillaryFromGrid();
   }
   if(p.view)STATE.view=p.view;
   refreshEchogram(); switchTab('echogram');
 }
-function computeAncillaryFromGrid(){ if(!STATE.anc && STATE.pings.length) computeAncillary(); }
+function computeAncillaryFromGrid(){ if(!STATE.anc && STATE.freqs.length) computeAncillary(); }
 
 /* ==========================================================================
    9. SYNTHETIC DEMO DATASET (realistic 455 kHz up-looking mooring, 1 day)
    ========================================================================== */
 function makeDemo(){
-  // Config mirrors the Lac Thibeault (Chic-Chocs) .mfawcpl: freshwater, 67 + 455 kHz,
-  // dig 64 kHz, 1584 range samples / 9 averaging = 176 bins, lockout 0, up-looking.
-  const nB=176, nT=560, dig_rate=64000, range_spb=9, lockout=0;
+  // Mirrors the Lac Thibeault (Chic-Chocs) deployment: freshwater, 176 bins (~0.1 m),
+  // up-looking. 455 kHz is acquired in every 30-min burst; 67 kHz only every 6th burst
+  // (~3 h) — i.e. the two transducers run on DIFFERENT time intervals, as in the .mfawcpl.
+  const nB=176, dig_rate=64000, range_spb=9, lockout=0;
   const c=1450.5, dz=range_spb*c/(2*dig_rate), startR=lockout*c/(2*dig_rate), dep=18;
   const t0=Date.UTC(2023,6,4,0,0,0), pings=[];
-  for(let t=0;t<nT;t++){
-    const time=t0+t*(86400000/nT);
-    const hourOfDay=((time-t0)/3600000)%24;
-    const solar=Math.cos((hourOfDay-13)/24*2*Math.PI);
-    const layerDepth=6+7*Math.max(0,solar);            // zooplankton layer: 6 m at night -> 13 m by day
-    const a67=new Float32Array(nB), a455=new Float32Array(nB);
-    for(let i=0;i<nB;i++){
-      const R=startR+(i+0.5)*dz, depth=dep-R;           // up-looking, shallow lake
-      const bg=1200+180*Math.random();
-      const g1=Math.exp(-((depth-layerDepth)**2)/(2*2.2*2.2));                 // migrating layer (tight in a lake)
-      const g2=Math.exp(-((depth-15)**2)/(2*2*2))*(0.3+0.7*Math.max(0,solar)); // deeper resident layer
-      const surf=Math.exp(-((depth-2)**2)/(2*1.5*1.5));                        // near-surface scattering
-      let v455=bg+g1*(22000+3000*Math.random())+g2*(9000+1500*Math.random())+surf*(4000+800*Math.random());
-      if(Math.random()<0.0006) v455+=30000*Math.random();
-      let v67=bg+g1*(9000+1500*Math.random())+g2*(6000+1000*Math.random())+surf*(2500*Math.random());
-      if(Math.random()<0.0004) v67+=34000*Math.random();
-      a455[i]=clamp(Math.round(v455),0,65535); a67[i]=clamp(Math.round(v67),0,65535);
+  const days=3, burstsPerDay=48, pingsPerBurst=18, pingDt=2000, burstDt=86400000/burstsPerDay;
+  const totBursts=days*burstsPerDay;
+  let bIdx=0;
+  for(let d=0;d<days;d++) for(let b=0;b<burstsPerDay;b++,bIdx++){
+    const bs=t0+bIdx*burstDt, has67=(bIdx%6===0);
+    for(let p=0;p<pingsPerBurst;p++){
+      const time=bs+p*pingDt, hourOfDay=((time-t0)/3600000)%24;
+      const solar=Math.cos((hourOfDay-13)/24*2*Math.PI), layerDepth=6+7*Math.max(0,solar);
+      const a455=new Float32Array(nB), a67=has67?new Float32Array(nB):null;
+      for(let i=0;i<nB;i++){
+        const R=startR+(i+0.5)*dz, depth=dep-R, bg=1200+180*Math.random();
+        const g1=Math.exp(-((depth-layerDepth)**2)/(2*2.2*2.2));
+        const g2=Math.exp(-((depth-15)**2)/(2*2*2))*(0.3+0.7*Math.max(0,solar));
+        const surf=Math.exp(-((depth-2)**2)/(2*1.5*1.5));
+        let v455=bg+g1*(22000+3000*Math.random())+g2*(9000+1500*Math.random())+surf*(4000+800*Math.random());
+        if(Math.random()<0.0006) v455+=30000*Math.random();
+        a455[i]=clamp(Math.round(v455),0,65535);
+        if(has67){ let v67=bg+g1*(9000+1500*Math.random())+g2*(6000+1000*Math.random())+surf*(2500*Math.random()); if(Math.random()<0.0004) v67+=34000*Math.random(); a67[i]=clamp(Math.round(v67),0,65535); }
+      }
+      const tiltx=32768+Math.round(500*Math.sin(bIdx/8)+120*(Math.random()-0.5));
+      const tilty=32768+Math.round(350*Math.cos(bIdx/11)+120*(Math.random()-0.5));
+      const battery=Math.round((12.6-0.4*bIdx/totBursts)/13.2*65535/2.5);
+      const pressure=Math.round((dep+0.5*Math.sin(bIdx/9))/200*65535);
+      const tempCount=tempCountFor(9+3.5*Math.sin((hourOfDay-15)/24*2*Math.PI));
+      const dt=new Date(time);
+      const base={flag:AZFP_FLAG,serial:55021,year:dt.getUTCFullYear(),month:dt.getUTCMonth()+1,day:dt.getUTCDate(),
+        hour:dt.getUTCHours(),minute:dt.getUTCMinutes(),second:dt.getUTCSeconds(),hundredths:0,
+        num_acq_pings:1,avg_pings:0,ping_per_profile:pingsPerBurst,ancillary:[tiltx,tilty,battery,pressure,tempCount],ad:[0,0]};
+      if(has67) pings.push({header:{...base,num_chan:2,dig_rate:[dig_rate,dig_rate,0,0],lockout:[lockout,lockout,0,0],num_bins:[nB,nB,0,0],range_spb:[range_spb,range_spb,0,0],pulse_len:[500,300,0,0],frequency:[67,455,0,0],data_type:[0,0,0,0]},chan:[a67,a455],time,src:'DEMO_LacThibeault.01A'});
+      else     pings.push({header:{...base,num_chan:1,dig_rate:[dig_rate,0,0,0],lockout:[lockout,0,0,0],num_bins:[nB,0,0,0],range_spb:[range_spb,0,0,0],pulse_len:[300,0,0,0],frequency:[455,0,0,0],data_type:[0,0,0,0]},chan:[a455],time,src:'DEMO_LacThibeault.01A'});
     }
-    const tiltx=32768+Math.round(500*Math.sin(t/50)+150*(Math.random()-0.5));
-    const tilty=32768+Math.round(350*Math.cos(t/70)+150*(Math.random()-0.5));
-    const battery=Math.round((12.6-0.4*t/nT)/13.2*65535/2.5);
-    const pressure=Math.round((dep+0.5*Math.sin(t/80))/200*65535);
-    const tempC=9+3.5*Math.sin((hourOfDay-15)/24*2*Math.PI);   // freshwater lake, warmer surface
-    const tempCount=tempCountFor(tempC);
-    const header={flag:AZFP_FLAG,profile_number:t,serial:55021,num_chan:2,
-      year:2023,month:7,day:4,hour:Math.floor(hourOfDay),minute:Math.floor((hourOfDay%1)*60),second:0,hundredths:0,
-      dig_rate:[dig_rate,dig_rate,0,0],lockout:[lockout,lockout,0,0],num_bins:[nB,nB,0,0],range_spb:[range_spb,range_spb,0,0],
-      pulse_len:[500,300,0,0],frequency:[67,455,0,0],num_acq_pings:1,avg_pings:0,ping_per_profile:150,data_type:[0,0,0,0],
-      ancillary:[tiltx,tilty,battery,pressure,tempCount],ad:[0,0]};
-    pings.push({header,chan:[a67,a455],time,src:'DEMO_LacThibeault.01A'});
   }
   return pings;
 }
@@ -1076,14 +1152,14 @@ function tempCountFor(T){ // invert Steinhart-Hart decoder used in computeAncill
 function loadDemo(){
   STATE.files=[{name:'DEMO_LacThibeault.01A',type:'data',buf:null,demo:true}];
   renderFileList();
-  STATE.pings=makeDemo(); buildChannels(); STATE.view={x0:0,x1:1,y0:0,y1:1};
-  // demo deployment defaults (freshwater lake, up-looking)
   $('#cC').value=1450.5; $('#cTau').value=300; $('#cAlpha').value=freshwaterAbsorption(455,10).toFixed(3);
   $('#depDepth').value=18; $$('#orientSeg button').forEach(b=>b.classList.toggle('on',b.dataset.o==='up'));
-  computeGrid();
-  $('#hstat').innerHTML=`<b>${STATE.pings.length}</b> pings · demo · 67+455 kHz · Lac Thibeault`;
+  const pings=makeDemo(), acc=newAcc(); for(const p of pings) routePing(acc,p); finalizeFreqs(acc);
+  STATE.view={x0:0,x1:1,y0:0,y1:1}; computeGrid();
+  const cols=STATE.freqs.map(f=>f.nT).reduce((a,b)=>a+b,0);
+  $('#hstat').innerHTML=`<b>${pings.length.toLocaleString()}</b> pings → <b>${cols.toLocaleString()}</b> ${STATE.resolution==='burst'?'bursts':'cols'} · 67+455 kHz · ${estMemoryMB().toFixed(1)} MB`;
   refreshEchogram(); switchTab('echogram');
-  toast('Demo deployment loaded — freshwater lake, 67 + 455 kHz DVM');
+  toast('Demo loaded — 455 kHz continuous + 67 kHz every 3 h ('+STATE.resolution+')');
 }
 
 /* ==========================================================================
@@ -1107,9 +1183,10 @@ function initUI(){
   $('#loadProj').onclick=()=>$('#projInput').click();
   $('#projInput').onchange=async e=>{const f=e.target.files[0];if(f){try{loadProjectObj(JSON.parse(await f.text()));toast('Project loaded');}catch(err){toast('Bad project file');}}e.target.value='';};
   // calibration + deployment recompute
-  ['cC','cEL','cDS','cTVR','cVTX','cEBA','cAlpha','cTau','depDepth'].forEach(id=>{$('#'+id).addEventListener('change',()=>{if(STATE.pings.length){computeGrid();refreshEchogram();}});});
-  $('#chanSel').onchange=e=>{STATE.chan=+e.target.value;$('#freqPill').textContent=(STATE.channels[STATE.chan]?.freq||'—')+' kHz';computeGrid();refreshEchogram();};
-  $$('#orientSeg button').forEach(b=>b.onclick=()=>{$$('#orientSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');if(STATE.pings.length){computeGrid();refreshEchogram();}});
+  ['cC','cEL','cDS','cTVR','cVTX','cEBA','cAlpha','cTau','depDepth'].forEach(id=>{$('#'+id).addEventListener('change',()=>{if(STATE.freqs.length){computeGrid();refreshEchogram();}});});
+  $('#chanSel').onchange=e=>{STATE.activeFreq=+e.target.value;$('#freqPill').textContent=(STATE.freqs[STATE.activeFreq]?.freq||'—')+' kHz';computeGrid();refreshEchogram();};
+  $('#resSel').onchange=e=>{STATE.resolution=e.target.value;if(STATE.files.some(f=>f.demo)){loadDemo();}else if(STATE.files.some(f=>f.type==='data'&&f.buf)){processData();}else{toast('Re-drop your .01A files to apply the new load mode');}};
+  $$('#orientSeg button').forEach(b=>b.onclick=()=>{$$('#orientSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');if(STATE.freqs.length){computeGrid();refreshEchogram();}});
   // echogram toolbar
   $('#svMin').oninput=e=>{$('#svMinLbl').textContent=e.target.value;refreshEchogram();};
   $('#svMax').oninput=e=>{$('#svMaxLbl').textContent=e.target.value;refreshEchogram();};

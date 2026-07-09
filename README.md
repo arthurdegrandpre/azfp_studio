@@ -4,14 +4,13 @@ A single-file, dependency-free browser app for analysing **ASL Environmental Sci
 
 It reads raw AZFP binary files directly in the browser, converts recorded counts to calibrated volume backscattering strength (Sv), and provides an interactive echogram, distribution metrics, ancillary-sensor plots, region annotation, and batch export. Everything runs client-side — no server, no build step, no data leaves the machine.
 
-> **Live app:** `https://<USERNAME>.github.io/azfp-studio/`
-> Replace `<USERNAME>` with your GitHub username after enabling Pages (see [Deployment](#deployment)).
-
 ---
 
 ## Features
 
 - **Native AZFP parser** — reads `.01A`–`.06A` binary files (big-endian, `0xFD02` compact-flash records) with the 124-byte header layout used by [echopype](https://github.com/OSOceanAcoustics/echopype). Handles both raw (2-byte) and averaged/summed (4-byte + 1-byte overflow) storage formats, auto-detects the 455 kHz channel, and merges multiple time-sequential files.
+- **Multiple frequencies, independent schedules** — each transducer frequency (e.g. 67 kHz and 455 kHz) is treated as its own time series, so a secondary board sampled on a coarser interval is handled natively. Switch between frequencies from the sidebar.
+- **Scales to multi-month deployments** — streaming ingest frees each file's bytes right after parsing, per-frequency data is stored as compact `Uint16` count grids, and a default **burst-averaged** load mode collapses each acquisition burst to one profile (an **Every-ping** mode keeps full resolution). The echogram uses level-of-detail rendering, and estimated in-app memory is shown in the header.
 - **AZFPLink `.mfawcpl` support** — parses the deployment configuration and sets acquisition defaults (sound speed, pulse length, freshwater absorption) plus a deployment-metadata panel.
 - **Calibrated echogram** — Sv via the ASL/Echoview AZFP equation, interactive pan/zoom, four palettes, adjustable dB range, ping averaging, hover readout, per-file boundary labels, and PNG export.
 - **Vertical target distribution** — center of mass, inertia, index of aggregation, equivalent area, NASC, depth-layer table, mean-Sv profile, and a diel-vertical-migration (center-of-mass vs time) plot.
