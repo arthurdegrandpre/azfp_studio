@@ -68,6 +68,8 @@ main{overflow:hidden;display:flex;flex-direction:column;min-width:0}
 .toolbar .grp:last-child{border-right:none}
 .toolbar label{font-size:11px}
 .toolbar input[type=range]{width:110px}
+.toolbar input.narrow{width:66px}
+.toolbar .grp.filt{background:#111a24;border:1px solid var(--line);border-radius:8px;padding:4px 8px}
 .pill{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:3px 9px;font-size:11px;color:var(--mut)}
 
 .egwrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;background:var(--bg)}
@@ -193,6 +195,7 @@ tr:hover td{background:#151d28}
           <span class="pill" id="svMinLbl">-90</span>
           <input type="range" id="svMax" min="-90" max="-10" value="-40"/>
           <span class="pill" id="svMaxLbl">-40</span> dB
+          <button id="autoRange" class="ghost" title="Auto-scale the Sv colour range to the data (percentiles)">Auto</button>
         </div>
         <div class="grp">
           <label>Palette</label>
@@ -206,6 +209,26 @@ tr:hover td{background:#151d28}
         <div class="grp">
           <label>Time avg</label>
           <select id="pingAvg"><option value="1">none</option><option value="3">3 pings</option><option value="6">6 pings</option><option value="12">12 pings</option></select>
+        </div>
+        <div class="grp filt">
+          <label>Filter</label>
+          <select id="filterSel">
+            <option value="none">None</option>
+            <option value="med3">Despeckle 3×3</option>
+            <option value="med5">Despeckle 5×5</option>
+            <option value="mean3">Smooth 3×3</option>
+            <option value="mean5">Smooth 5×5</option>
+            <option value="bgsub">Background removal</option>
+          </select>
+          <label title="Hide values below this Sv (noise floor)">Thr</label>
+          <input type="range" id="threshold" class="narrow" min="-120" max="-30" value="-120"/>
+          <span class="pill" id="thrLbl">off</span>
+        </div>
+        <div class="grp">
+          <label title="Restrict the displayed depth range">Depth (m)</label>
+          <input type="range" id="depTop" class="narrow" min="0" max="100" value="0" step="0.1"/>
+          <input type="range" id="depBot" class="narrow" min="0" max="100" value="100" step="0.1"/>
+          <span class="pill" id="depLbl">full</span>
         </div>
         <div class="grp tools">
           <label>Tool</label>
@@ -431,7 +454,7 @@ function tsFromCount(N,R,cal){
    is materialised as a Float32 Sv grid for rendering, keeping memory bounded
    even for multi-month deployments. */
 const STATE={files:[],freqs:[],activeFreq:0,grid:null,anc:null,annotations:[],
-  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'burst'};
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'burst',filter:'none',threshold:-120};
 
 // Burst-grouping parameters (memory management)
 const BURST={gap:90000, maxMs:1200000, maxPings:1000, fullMaxCols:400000};
@@ -519,7 +542,7 @@ function computeGrid(){
     for(let t=0;t<nT;t++){for(let i=0,j=nB-1;i<j;i++,j--){const A=t*nB+i,B=t*nB+j,tmp=sv[A];sv[A]=sv[B];sv[B]=tmp;}} }
   const segs=[]; {let cur=null; for(let t=0;t<nT;t++){const src=F.srcs[t]||'—'; if(!cur||cur.src!==src){cur={src,t0:t,t1:t};segs.push(cur);} else cur.t1=t;}}
   STATE.grid={sv,nT,nB,depth,range,time,dz,startR,orient,dep,segs};
-  computeAncillary();
+  computeAncillary(); updateDepthSliderBounds();
 }
 /* ancillary decode from the active frequency's burst-averaged sensor counts */
 function computeAncillary(){
@@ -596,26 +619,65 @@ const CLASS_COLORS={zooplankton:'#57e6a5',fish:'#ffb454','surface/ice':'#4cc4ff'
 
 function renderEchogramBitmap(){
   const g=STATE.grid; if(!g)return;
-  // Zoom-aware level-of-detail: rebuild the offscreen bitmap for the CURRENTLY
-  // VISIBLE column window, aggregating only enough to stay <=MAXBMP wide. When
-  // zoomed out over months this decimates; when zoomed in it shows full per-ping
-  // detail. (Canvas max width ~32k; screen ~2k, so 4k keeps 1:1-to-2:1 sharpness.)
-  const v=STATE.view, MAXBMP=4000, userAvg=Math.max(1,+$('#pingAvg').value||1);
+  const v=STATE.view, MAXBMP=4000, userAvg=Math.max(1,+$('#pingAvg').value||1), nB=g.nB;
   const c0=Math.max(0,Math.floor(v.x0*g.nT)), c1=Math.min(g.nT,Math.ceil(v.x1*g.nT)), span=Math.max(1,c1-c0);
   const colStep=Math.max(userAvg, Math.ceil(span/MAXBMP)), nBmp=Math.max(1,Math.ceil(span/colStep));
-  const off=document.createElement('canvas'); off.width=nBmp; off.height=g.nB;
-  const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,g.nB);
+  // 1) aggregate the visible window into a display grid D[t*nB+i] (energetic mean)
+  const D=new Float32Array(nBmp*nB);
+  for(let t=0;t<nBmp;t++){const a0=c0+t*colStep,a1=Math.min(c1,a0+colStep);
+    for(let i=0;i<nB;i++){let acc=0,cnt=0;for(let cc=a0;cc<a1;cc++){acc+=Math.pow(10,g.sv[cc*nB+i]/10);cnt++;}D[t*nB+i]=10*log10(acc/Math.max(1,cnt));}}
+  // 2) visualization filtering (despeckle / smooth / background removal / threshold)
+  const F=applyVizFilter(D,nBmp,nB);
+  // 3) colour to bitmap
+  const off=document.createElement('canvas'); off.width=nBmp; off.height=nB;
+  const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,nB);
   const smin=+$('#svMin').value, smax=+$('#svMax').value, rng=(smax-smin)||1;
-  for(let t=0;t<nBmp;t++){
-    const a0=c0+t*colStep, a1=Math.min(c1,a0+colStep);
-    for(let i=0;i<g.nB;i++){
-      let acc=0,cnt=0; for(let cc=a0;cc<a1;cc++){acc+=Math.pow(10,g.sv[cc*g.nB+i]/10);cnt++;}
-      const svA=10*log10(acc/Math.max(1,cnt)), [r,gg,b]=cmap(STATE.palette,(svA-smin)/rng), idx=(i*nBmp+t)*4;
-      img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;
-    }
-  }
-  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB:g.nB, wx0:c0/g.nT, wx1:c1/g.nT};
+  for(let t=0;t<nBmp;t++)for(let i=0;i<nB;i++){const val=F[t*nB+i];const norm=(val<=-900)?-1:(val-smin)/rng;const[r,gg,b]=cmap(STATE.palette,norm),idx=(i*nBmp+t)*4;img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;}
+  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB, wx0:c0/g.nT, wx1:c1/g.nT};
 }
+/* ---- visualization filters (operate on the display grid, dB values) ---- */
+function applyVizFilter(D,W,H){
+  const filt=STATE.filter||'none', thr=(STATE.threshold==null?-120:STATE.threshold);
+  let out=D;
+  if(filt==='med3'||filt==='med5'){ const r=filt==='med5'?2:1; out=new Float32Array(W*H); const win=[];
+    for(let t=0;t<W;t++)for(let i=0;i<H;i++){win.length=0;
+      for(let dt=-r;dt<=r;dt++){const tt=t+dt;if(tt<0||tt>=W)continue;for(let di=-r;di<=r;di++){const ii=i+di;if(ii<0||ii>=H)continue;win.push(D[tt*H+ii]);}}
+      win.sort((a,b)=>a-b); out[t*H+i]=win[win.length>>1];}
+  } else if(filt==='mean3'||filt==='mean5'){ const r=filt==='mean5'?2:1; out=new Float32Array(W*H);
+    for(let t=0;t<W;t++)for(let i=0;i<H;i++){let acc=0,cnt=0;
+      for(let dt=-r;dt<=r;dt++){const tt=t+dt;if(tt<0||tt>=W)continue;for(let di=-r;di<=r;di++){const ii=i+di;if(ii<0||ii>=H)continue;acc+=Math.pow(10,D[tt*H+ii]/10);cnt++;}}
+      out[t*H+i]=10*log10(acc/cnt);}
+  } else if(filt==='bgsub'){ out=new Float32Array(W*H);
+    for(let i=0;i<H;i++){ const col=new Float64Array(W); for(let t=0;t<W;t++)col[t]=D[t*H+i];
+      const srt=Float64Array.from(col).sort(); const bgDb=srt[Math.floor(W*0.2)]; const bgLin=Math.pow(10,bgDb/10);
+      for(let t=0;t<W;t++){const lin=Math.pow(10,D[t*H+i]/10)-bgLin; out[t*H+i]=lin>0?10*log10(lin):-999;}}
+  }
+  if(thr>-119){ if(out===D) out=Float32Array.from(D); for(let k=0;k<out.length;k++) if(out[k]<thr) out[k]=-1000; }
+  return out;
+}
+/* auto-scale the Sv colour range from data percentiles */
+function autoRange(){
+  const g=STATE.grid; if(!g)return;
+  const N=g.sv.length, step=Math.max(1,Math.floor(N/30000)), a=[];
+  for(let k=0;k<N;k+=step){const x=g.sv[k]; if(isFinite(x))a.push(x);}
+  if(!a.length)return; a.sort((x,y)=>x-y);
+  let lo=Math.round(a[Math.floor(a.length*0.10)]), hi=Math.round(a[Math.floor(a.length*0.99)]);
+  lo=clamp(lo,-120,-45); hi=clamp(hi,lo+10,-10);
+  $('#svMin').value=lo;$('#svMinLbl').textContent=lo;$('#svMax').value=hi;$('#svMaxLbl').textContent=hi;
+  refreshEchogram();
+}
+/* depth-limit sliders <-> depth view window */
+function fracForDepth(d){const g=STATE.grid;const d0=g.depth[0],d1=g.depth[g.nB-1];return clamp((d-d0)/((d1-d0)||1),0,1);}
+function updateDepthSliderBounds(){const g=STATE.grid,dt=$('#depTop'),db=$('#depBot');if(!g||!dt||!db)return;
+  const d0=Math.min(g.depth[0],g.depth[g.nB-1]),d1=Math.max(g.depth[0],g.depth[g.nB-1]);
+  [dt,db].forEach(x=>{x.min=d0.toFixed(2);x.max=d1.toFixed(2);x.step=Math.max(0.01,(d1-d0)/300).toFixed(3);});}
+function syncDepthSliders(){const g=STATE.grid;if(!g)return;const dt=$('#depTop'),db=$('#depBot'),lbl=$('#depLbl');if(!dt||!db)return;
+  const d0=g.depth[0],d1=g.depth[g.nB-1],v=STATE.view,top=d0+v.y0*(d1-d0),bot=d0+v.y1*(d1-d0);
+  dt.value=top.toFixed(2);db.value=bot.toFixed(2);
+  const full=(v.y0<=0.001&&v.y1>=0.999); if(lbl)lbl.textContent=full?'full':(fmt(Math.min(top,bot),1)+'–'+fmt(Math.max(top,bot),1));}
+function onDepthSlider(){const g=STATE.grid;if(!g)return;
+  let a=fracForDepth(+$('#depTop').value),b=fracForDepth(+$('#depBot').value);let y0=Math.min(a,b),y1=Math.max(a,b);
+  if(y1-y0<0.02)y1=Math.min(1,y0+0.02); STATE.view={...STATE.view,y0,y1}; refreshEchogram();}
 function depthAt(fy){const g=STATE.grid,v=STATE.view,i=clamp(Math.round((v.y0+(v.y1-v.y0)*fy)*(g.nB-1)),0,g.nB-1);return g.depth[i];}
 function timeAt(fx){const g=STATE.grid,v=STATE.view,t=clamp(Math.round((v.x0+(v.x1-v.x0)*fx)*(g.nT-1)),0,g.nT-1);return g.time[t];}
 function drawEchogram(){
@@ -659,7 +721,7 @@ function drawEchogram(){
   if(dragRegion&&dragRegion.tzoom){const bx0=AX.left+((Math.min(dragRegion.x0,dragRegion.x1)-v.x0)/(v.x1-v.x0))*pw,bx1=AX.left+((Math.max(dragRegion.x0,dragRegion.x1)-v.x0)/(v.x1-v.x0))*pw;ctx.fillStyle='rgba(87,230,165,.15)';ctx.fillRect(bx0,AX.top,bx1-bx0,ph);ctx.strokeStyle='#57e6a5';ctx.setLineDash([5,4]);ctx.lineWidth=1.5;ctx.strokeRect(bx0,AX.top,Math.max(1,bx1-bx0),ph);ctx.setLineDash([]);}
   else if(dragRegion){const rc=rectPx(dragRegion,pw,ph);ctx.strokeStyle='#57e6a5';ctx.setLineDash([5,4]);ctx.lineWidth=1.5;ctx.strokeRect(rc.x,rc.y,rc.w,rc.h);}
   ctx.restore();
-  renderNav();
+  syncDepthSliders(); renderNav();
 }
 function rectPx(r,pw,ph){const v=STATE.view;
   const x=AX.left+((r.x0-v.x0)/(v.x1-v.x0))*pw, x2=AX.left+((r.x1-v.x0)/(v.x1-v.x0))*pw;
@@ -1072,6 +1134,10 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <p>Each transducer frequency is handled as an <b>independent time series</b>. AZFP deployments often sample a secondary board (e.g. 67 kHz) on a coarser schedule than the primary (e.g. 455 kHz), so the two frequencies have different numbers of profiles at different times. The parser routes every ping's channels to the matching frequency, and the <b>Frequency</b> selector switches the echogram, metrics, and ancillary panels between them.</p>
   <p>For multi-month records the app keeps memory bounded with several strategies: files are parsed one at a time and their raw bytes freed immediately after; each frequency stores its profiles as a compact <code>Uint16</code> count grid; and — in the default <b>burst-averaged</b> load mode — pings are grouped into bursts (by acquisition gaps) and averaged to one profile per burst, which is the natural long-term representation for diel-migration work. Only the active frequency is expanded to a floating-point Sv grid for display. An <b>Every-ping</b> mode preserves full resolution for shorter records. For multi-day records an <b>overview navigator</b> strip below the echogram shows the whole series with a draggable view window, time-axis labels adapt to the visible span (seconds up to dates), and dashed UTC day boundaries are drawn and labelled so long series remain easy to orient in. The echogram additionally uses <b>zoom-aware</b> level-of-detail rendering: when zoomed out it aggregates profiles so the drawn image never exceeds a few thousand columns regardless of dataset length, but when zoomed in it rebuilds the visible window at full per-ping resolution. Estimated in-app memory is shown in the header and Automation tab.</p>
 
+  <h3>8 · Display, contrast &amp; noise filtering</h3>
+  <p>Echogram interpretation depends heavily on the colour mapping and on suppressing noise. The <b>Sv range</b> sliders set the colour limits; the <b>Auto</b> button scales them to the data (10th–99th percentile) and is applied automatically when data is loaded, so weak scattering layers are visible without manual tuning. Several visualization filters operate on the displayed grid (they do not alter the calibrated data used for metrics or export):</p>
+  <p><b>Despeckle (median 3×3 / 5×5)</b> removes isolated impulse noise and single-target spikes while preserving layer edges. <b>Smooth (mean 3×3 / 5×5)</b> averages in the linear domain to enhance faint, spatially coherent layers. <b>Background removal</b> subtracts, for each depth, a low-percentile (time-persistent) background estimate — useful for removing constant electronic noise or near-field ringing bands (note it also removes time-invariant biological layers). The <b>threshold</b> slider masks everything below a chosen Sv (a noise floor). A <b>depth-limit</b> control restricts the displayed depth range, and a horizontal <b>Time zoom</b> tool plus an overview navigator support browsing long multi-day series.</p>
+
   <h3>Data-integrity note</h3>
   <p>The example files bundled with this project were altered by a text-mode transfer: high bytes (0x80–0xFF) were replaced with the Unicode replacement marker, which is <b>lossy and irreversible</b> for the acoustic amplitudes. AZFP Studio therefore ships with a synthetic demonstration deployment. Load your original binary <code>.01A</code> files (and the matching <code>.XML</code>) for real analysis — the parser reads the genuine format directly.</p>
 
@@ -1138,7 +1204,7 @@ function processData(){
   STATE.view={x0:0,x1:1,y0:0,y1:1}; computeGrid();
   const cols=STATE.freqs.map(f=>f.nT).reduce((a,b)=>a+b,0);
   $('#hstat').innerHTML=`<b>${totalPings.toLocaleString()}</b> pings → <b>${cols.toLocaleString()}</b> ${STATE.resolution==='burst'?'bursts':'cols'} · ${STATE.freqs.length} freq · ${estMemoryMB().toFixed(1)} MB`;
-  switchTab('echogram'); refreshEchogram();
+  switchTab('echogram'); autoRange();
   toast('Processed '+totalPings.toLocaleString()+' pings — '+STATE.freqs.map(f=>f.freq+' kHz: '+f.nT.toLocaleString()).join(', ')+(truncated?' · full-res cap hit':'')+(errs.length?' · '+errs.length+' skipped':''));
 }
 
@@ -1248,7 +1314,7 @@ function loadDemo(){
   STATE.view={x0:0,x1:1,y0:0,y1:1}; computeGrid();
   const cols=STATE.freqs.map(f=>f.nT).reduce((a,b)=>a+b,0);
   $('#hstat').innerHTML=`<b>${pings.length.toLocaleString()}</b> pings → <b>${cols.toLocaleString()}</b> ${STATE.resolution==='burst'?'bursts':'cols'} · 67+455 kHz · ${estMemoryMB().toFixed(1)} MB`;
-  refreshEchogram(); switchTab('echogram');
+  switchTab('echogram'); autoRange();
   toast('Demo loaded — 455 kHz continuous + 67 kHz every 3 h ('+STATE.resolution+')');
 }
 
@@ -1282,6 +1348,10 @@ function initUI(){
   $('#svMax').oninput=e=>{$('#svMaxLbl').textContent=e.target.value;refreshEchogram();};
   $('#paletteSel').onchange=e=>{STATE.palette=e.target.value;refreshEchogram();};
   $('#pingAvg').onchange=refreshEchogram;
+  $('#filterSel').onchange=e=>{STATE.filter=e.target.value;refreshEchogram();};
+  $('#threshold').oninput=e=>{STATE.threshold=+e.target.value;$('#thrLbl').textContent=(+e.target.value<=-119?'off':e.target.value+' dB');refreshEchogram();};
+  $('#autoRange').onclick=autoRange;
+  $('#depTop').oninput=onDepthSlider; $('#depBot').oninput=onDepthSlider;
   $$('.tools button[data-tool]').forEach(b=>b.onclick=()=>{STATE.tool=b.dataset.tool;$$('.tools button[data-tool]').forEach(x=>x.classList.toggle('on',x===b));$('#egCanvas').style.cursor=({region:'crosshair',zoom:'zoom-in',tzoom:'col-resize',pan:'grab'}[b.dataset.tool]||'grab');});
   $('#resetView').onclick=()=>{STATE.view={x0:0,x1:1,y0:0,y1:1};refreshEchogram();};
   $('#exportPng').onclick=()=>{const cv=$('#egCanvas');cv.toBlob(b=>{const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='azfp_echogram.png';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);});toast('Echogram PNG saved');};
