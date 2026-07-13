@@ -181,6 +181,7 @@ tr:hover td{background:#151d28}
     <div class="tabs" id="tabs">
       <div class="tab on" data-v="echogram">Echogram</div>
       <div class="tab" data-v="vdist">Vertical distribution</div>
+      <div class="tab" data-v="insights">Insights &amp; report</div>
       <div class="tab" data-v="ancillary">Ancillary sensors</div>
       <div class="tab" data-v="annot">Annotations</div>
       <div class="tab" data-v="batch">Automation</div>
@@ -257,6 +258,7 @@ tr:hover td{background:#151d28}
     </section>
 
     <section class="view" data-view="vdist" style="display:none"><div id="vdistBody"></div></section>
+    <section class="view" data-view="insights" style="display:none"><div id="insightsBody"></div></section>
     <section class="view" data-view="ancillary" style="display:none"><div id="ancBody"></div></section>
     <section class="view" data-view="annot" style="display:none"><div id="annotBody"></div></section>
     <section class="view" data-view="batch" style="display:none"><div id="batchBody"></div></section>
@@ -460,7 +462,7 @@ function tsFromCount(N,R,cal){
    is materialised as a Float32 Sv grid for rendering, keeping memory bounded
    even for multi-month deployments. */
 const STATE={files:[],freqs:[],activeFreq:0,grid:null,anc:null,annotations:[],
-  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0};
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5};
 
 // Burst-grouping parameters (memory management)
 const BURST={gap:90000, maxMs:1200000, maxPings:1000, fullMaxCols:400000};
@@ -633,7 +635,7 @@ function cmap(name,t){t=clamp(t,0,1);const s=CMAPS[name]||CMAPS.viridis,n=s.leng
 
 const AX={left:64,right:66,top:12,bottom:34};
 let egImg=null, dragRegion=null;
-const CLASS_COLORS={zooplankton:'#57e6a5',fish:'#ffb454','surface/ice':'#4cc4ff',bottom:'#c77dff',noise:'#ff6b6b',other:'#8b98a9'};
+const CLASS_COLORS={zooplankton:'#57e6a5',aggregation:'#ff8fb0',fish:'#ffb454','surface/ice':'#4cc4ff',bottom:'#c77dff',noise:'#ff6b6b',other:'#8b98a9'};
 
 function clampDepthView(){const my=STATE.minY||0,v=STATE.view; if(v.y0<my-1e-9){let y1=(v.y1>my)?v.y1:1; if(y1-my<0.02)y1=Math.min(1,my+0.02); STATE.view={...v,y0:my,y1};}}
 function renderEchogramBitmap(){
@@ -888,11 +890,262 @@ function initEgEvents(){
 /* ==========================================================================
    7. TAB VIEWS
    ========================================================================== */
+/* ==========================================================================
+   AUTOMATED OBJECT DETECTION + LABELLING
+   Connected-component analysis of strong-backscatter patches on the Sv grid.
+   ==========================================================================*/
+function firstPhysBin(g){ for(let i=0;i<g.nB;i++) if(g.depth[i]>=0) return i; return 0; }
+function defaultDetThr(g){
+  const N=g.sv.length,step=Math.max(1,Math.floor(N/30000)),a=[];
+  for(let k=0;k<N;k+=step){const x=g.sv[k];if(isFinite(x))a.push(x);}
+  if(!a.length)return -70; a.sort((x,y)=>x-y);
+  return Math.round(a[Math.floor(a.length*0.90)]);   // top ~10% of echoes
+}
+function detectObjects(opt){
+  const g=STATE.grid; if(!g) return [];
+  const nB=g.nB, nT=g.nT, sv=g.sv, i0p=firstPhysBin(g);
+  const thr=(opt&&opt.thr!=null)?opt.thr:(STATE.detThr!=null?STATE.detThr:defaultDetThr(g));
+  const minCells=(opt&&opt.minCells)||STATE.detMin||5;
+  const v=STATE.view;
+  const c0=Math.max(0,Math.floor(v.x0*nT)), c1=Math.min(nT,Math.ceil(v.x1*nT));
+  const mask=new Uint8Array(nT*nB), seen=new Uint8Array(nT*nB);
+  for(let t=c0;t<c1;t++)for(let i=i0p;i<nB;i++){ if(sv[t*nB+i]>=thr) mask[t*nB+i]=1; }
+  const objs=[], stack=[];
+  for(let t=c0;t<c1;t++)for(let i=i0p;i<nB;i++){
+    const idx0=t*nB+i; if(!mask[idx0]||seen[idx0])continue;
+    stack.length=0; stack.push(idx0); seen[idx0]=1;
+    let t0=t,t1=t,bi0=i,bi1=i,area=0,sumLin=0,peak=-999,sumZ=0;
+    while(stack.length){
+      const idx=stack.pop(), tt=(idx/nB)|0, ii=idx-tt*nB, s=sv[idx], lin=Math.pow(10,s/10);
+      area++; sumLin+=lin; if(s>peak)peak=s; sumZ+=g.depth[ii]*lin;
+      if(tt<t0)t0=tt; if(tt>t1)t1=tt; if(ii<bi0)bi0=ii; if(ii>bi1)bi1=ii;
+      for(let dt=-1;dt<=1;dt++)for(let di=-1;di<=1;di++){
+        if(!dt&&!di)continue; const nt=tt+dt, ni=ii+di;
+        if(nt<c0||nt>=c1||ni<i0p||ni>=nB)continue;
+        const nidx=nt*nB+ni; if(mask[nidx]&&!seen[nidx]){seen[nidx]=1;stack.push(nidx);}
+      }
+    }
+    if(area<minCells) continue;
+    const cols=(t1-t0+1)||1;
+    const o={t0,t1,i0:bi0,i1:bi1,area,cols,
+      meanSvDb:10*log10(sumLin/area), peakSvDb:peak, cmDepth:sumZ/sumLin,
+      depthTop:Math.min(g.depth[bi0],g.depth[bi1]), depthBot:Math.max(g.depth[bi0],g.depth[bi1]),
+      heightM:(bi1-bi0+1)*g.dz, timeStart:g.time[t0], timeEnd:g.time[t1], durS:(g.time[t1]-g.time[t0])/1000,
+      nasc:4*Math.PI*1852*1852*sumLin*g.dz/cols};
+    o.cls=classifyObject(o,g,nT,nB,i0p);
+    objs.push(o);
+  }
+  objs.sort((a,b)=>b.nasc-a.nasc);
+  return objs;
+}
+function classifyObject(o,g,nT,nB,i0p){
+  const timeFrac=o.cols/Math.max(1,nT), phys=nB-i0p;
+  if(o.i0<=i0p+1 && timeFrac>0.30) return 'surface/ice';
+  if(o.i1>=nB-2 && timeFrac>0.30) return 'bottom';
+  if(o.area<=8 && o.heightM<Math.max(1.5,g.dz*4)) return 'fish';
+  if(timeFrac<0.06 && o.heightM<8 && o.meanSvDb>-72) return 'aggregation';
+  if(timeFrac>0.22) return 'zooplankton';
+  return 'other';
+}
+function autoName(cls,k){ const n={'zooplankton':'Layer','aggregation':'Aggregation','fish':'Target','surface/ice':'Surface','bottom':'Bottom','other':'Object'}[cls]||'Object'; return n+' '+(k+1); }
+function runDetection(){
+  const g=STATE.grid; if(!g){toast('Load data first');return;}
+  if(STATE.detThr==null) STATE.detThr=defaultDetThr(g);
+  const objs=detectObjects({});
+  STATE.annotations=STATE.annotations.filter(r=>!r.auto);
+  objs.forEach((o,k)=>{
+    STATE.annotations.push({
+      x0:o.t0/(g.nT-1), x1:o.t1/(g.nT-1), y0:o.i0/(g.nB-1), y1:o.i1/(g.nB-1),
+      cls:o.cls, name:autoName(o.cls,k), auto:true,
+      note:`auto · Sv̄ ${fmt(o.meanSvDb,1)} dB · peak ${fmt(o.peakSvDb,1)} · ${fmt(o.heightM,1)} m · CM ${fmt(o.cmDepth,1)} m`
+    });
+  });
+  const byClass={}; objs.forEach(o=>byClass[o.cls]=(byClass[o.cls]||0)+1);
+  toast('Detected '+objs.length+' objects: '+Object.entries(byClass).map(([c,n])=>n+' '+c).join(', '));
+  renderAnnot(); refreshEchogram();
+}
+function detectionCardHTML(){
+  const n=STATE.annotations.filter(r=>r.auto).length;
+  const cur=(STATE.detThr==null?defaultDetThr(STATE.grid||{sv:new Float32Array(),nB:1}):STATE.detThr);
+  return `<div class="card"><h4>Automated object detection &amp; labelling</h4>
+    <div class="sub">Finds connected patches of strong backscatter in the current view, classifies each (layer, aggregation, fish/target, surface, bottom) and adds them as labelled regions.</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:6px">
+      <label>Threshold <input type="range" id="detThr" min="-110" max="-30" step="1" value="${cur}" style="vertical-align:middle"> <span class="pill" id="detThrLbl">${cur} dB</span></label>
+      <label>Min size <input type="number" id="detMin" value="${STATE.detMin||5}" min="1" style="width:56px"> cells</label>
+      <button class="primary" id="runDetect">⦿ Auto-detect</button>
+      <button id="clearAuto" class="ghost">Clear auto (${n})</button>
+    </div></div>`;
+}
+function wireDetection(){
+  const th=$('#detThr'); if(th)th.oninput=e=>{STATE.detThr=+e.target.value;const l=$('#detThrLbl');if(l)l.textContent=e.target.value+' dB';};
+  const dm=$('#detMin'); if(dm)dm.onchange=e=>{STATE.detMin=Math.max(1,+e.target.value|0);};
+  const rd=$('#runDetect'); if(rd)rd.onclick=runDetection;
+  const ca=$('#clearAuto'); if(ca)ca.onclick=()=>{STATE.annotations=STATE.annotations.filter(r=>!r.auto);renderAnnot();refreshEchogram();};
+}
+
+/* ==========================================================================
+   VERTICAL-MIGRATION ANALYSIS + INSIGHTS
+   ==========================================================================*/
+function analyzeDVM(){
+  const g=STATE.grid; if(!g||g.nT<4) return null;
+  const nB=g.nB, i0p=firstPhysBin(g), floorLin=Math.pow(10,(STATE.dvmFloor!=null?STATE.dvmFloor:-95)/10);
+  const cm=new Float64Array(g.nT), nasc=new Float64Array(g.nT), tArr=g.time;
+  for(let t=0;t<g.nT;t++){ let sum=0,sumZ=0,na=0;
+    for(let i=i0p;i<nB;i++){ if(g.depth[i]<0)continue; let lin=Math.pow(10,g.sv[t*nB+i]/10); if(lin<floorLin)lin=0; sum+=lin;sumZ+=g.depth[i]*lin;na+=lin*g.dz; }
+    cm[t]=sum>0?sumZ/sum:NaN; nasc[t]=4*Math.PI*1852*1852*na;
+  }
+  const nFinite=cm.reduce((a,x)=>a+(isFinite(x)?1:0),0);
+  const hourCM=Array.from({length:24},()=>[]);
+  for(let t=0;t<g.nT;t++){ if(isFinite(cm[t])) hourCM[new Date(tArr[t]).getUTCHours()].push(cm[t]); }
+  const dielCM=hourCM.map(a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:NaN);
+  let shH=-1,deH=-1,shV=1e9,deV=-1e9;
+  dielCM.forEach((v,h)=>{ if(isFinite(v)){ if(v<shV){shV=v;shH=h;} if(v>deV){deV=v;deH=h;} } });
+  const winMean=c=>{let s=0,n=0;for(let d=-1;d<=1;d++){const h=(c+d+24)%24;if(isFinite(dielCM[h])){s+=dielCM[h];n++;}}return n?s/n:NaN;};
+  const dayCM=winMean(deH), nightCM=winMean(shH), amplitude=(isFinite(deV)&&isFinite(shV))?deV-shV:NaN;
+  let descentH=-1,ascentH=-1,mx=-1e9,mn=1e9;
+  for(let h=0;h<24;h++){const a0=dielCM[h],a1=dielCM[(h+1)%24];if(isFinite(a0)&&isFinite(a1)){const sl=a1-a0;if(sl>mx){mx=sl;descentH=(h+1)%24;}if(sl<mn){mn=sl;ascentH=(h+1)%24;}}}
+  const byDay={};
+  for(let t=0;t<g.nT;t++){ if(!isFinite(cm[t]))continue; const d=new Date(tArr[t]).toISOString().slice(0,10); (byDay[d]=byDay[d]||[]).push(cm[t]); }
+  const days=Object.keys(byDay).sort().map(d=>{const arr=byDay[d];const mn2=Math.min(...arr),mx2=Math.max(...arr);return {date:d,min:mn2,max:mx2,amp:mx2-mn2,mean:arr.reduce((x,y)=>x+y,0)/arr.length,n:arr.length};});
+  let n=0,sx=0,sy=0,sxx=0,syy=0,sxy=0;
+  if(STATE.anc && STATE.anc.temp && STATE.anc.temp.length===g.nT){
+    for(let t=0;t<g.nT;t++){const x=cm[t],y=STATE.anc.temp[t]; if(isFinite(x)&&isFinite(y)){n++;sx+=x;sy+=y;sxx+=x*x;syy+=y*y;sxy+=x*y;}}
+  }
+  const tempCorr=n>3?(n*sxy-sx*sy)/(Math.sqrt((n*sxx-sx*sx)*(n*syy-sy*sy))||1):NaN;
+  const meanCM=(()=>{let s=0,c=0;for(let t=0;t<g.nT;t++)if(isFinite(cm[t])){s+=cm[t];c++;}return c?s/c:NaN;})();
+  const strong=isFinite(amplitude)&&amplitude>=2&&isFinite(dayCM)&&isFinite(nightCM);
+  const reverse=isFinite(dayCM)&&isFinite(nightCM)&&nightCM>dayCM+0.5;
+  return {cm,nasc,tArr,dielCM,shH,deH,shV,deV,amplitude,dayCM,nightCM,descentH,ascentH,days,tempCorr,meanCM,strong,reverse,nFinite,
+    freq:STATE.freqs[STATE.activeFreq]?STATE.freqs[STATE.activeFreq].freq:null};
+}
+function buildInsightText(a){
+  if(!a) return ['Not enough data for a vertical-migration analysis (need at least a few profiles across time).'];
+  const p=(x,d=1)=>fmt(x,d), s=[], pad=h=>String(h).padStart(2,'0');
+  const spanDays=(a.tArr[a.tArr.length-1]-a.tArr[0])/86400000;
+  s.push(`Analysed ${p(spanDays,1)} day(s) of the ${a.freq} kHz channel (${a.nFinite.toLocaleString()} profiles with usable backscatter).`);
+  if(a.strong){
+    s.push(`${a.reverse?'Reverse diel':'Diel'} vertical migration is evident — the backscatter centre of mass is ${a.reverse?'shallowest by day and deepest at night':'deepest by day and shallowest at night'}.`);
+    s.push(`Centre of mass deepens to ~${p(a.deV)} m near ${pad(a.deH)}:00 UTC and rises to ~${p(a.shV)} m near ${pad(a.shH)}:00 UTC — a diel migration amplitude of ${p(a.amplitude)} m.`);
+    s.push(`Mean day-time depth ${p(a.dayCM)} m versus night-time ${p(a.nightCM)} m.`);
+    if(a.descentH>=0) s.push(`Fastest descent around ${pad(a.descentH)}:00 and fastest ascent around ${pad(a.ascentH)}:00 UTC.`);
+    const amps=a.days.map(d=>d.amp).filter(isFinite);
+    if(amps.length>1) s.push(`Over ${a.days.length} days the daily amplitude ranged ${p(Math.min(...amps))}–${p(Math.max(...amps))} m (mean ${p(amps.reduce((x,y)=>x+y,0)/amps.length)} m), indicating ${(Math.max(...amps)-Math.min(...amps))<3?'a consistent':'a variable'} migration.`);
+  } else {
+    s.push(`No strong diel migration was resolved (24-hour peak-to-peak amplitude ${isFinite(a.amplitude)?p(a.amplitude)+' m':'n/a'}). The scattering layer appears relatively stationary, or the record is too short/noisy to resolve a clear cycle.`);
+  }
+  if(isFinite(a.tempCorr)) s.push(`Centre-of-mass depth is ${a.tempCorr<0?'negatively':'positively'} correlated with temperature (r = ${p(a.tempCorr,2)}).`);
+  s.push(`Times are UTC and day/night are inferred from the observed cycle (no coordinates supplied). Sv is ${STATE.xmlCal?'calibrated from the instrument .XML':'approximate — placeholder calibration'}; load the coefficient .XML for quantitative values.`);
+  return s;
+}
+/* light-theme inline SVG line chart for the exported report */
+function svgChart(pts,o){
+  o=o||{}; const W=o.w||540,H=o.h||170,ml=46,mr=14,mt=12,mb=26,pw=W-ml-mr,ph=H-mt-mb;
+  const all=pts.filter(p=>isFinite(p[1]));
+  const xs=o.xmin!=null?o.xmin:Math.min(...all.map(p=>p[0])), xe=o.xmax!=null?o.xmax:Math.max(...all.map(p=>p[0]));
+  let ys=o.ymin!=null?o.ymin:Math.min(...all.map(p=>p[1])), ye=o.ymax!=null?o.ymax:Math.max(...all.map(p=>p[1])); if(ys===ye){ys-=1;ye+=1;}
+  const X=x=>ml+(x-xs)/((xe-xs)||1)*pw, Y=y=>o.flipY?mt+(y-ys)/((ye-ys)||1)*ph:mt+ph-(y-ys)/((ye-ys)||1)*ph;
+  let path='',started=false; pts.forEach(p=>{ if(!isFinite(p[1])){started=false;return;} path+=(started?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)+' '; started=true; });
+  let grid='',ylab=''; for(let k=0;k<=4;k++){const yy=mt+ph*k/4,val=o.flipY?ys+(ye-ys)*k/4:ye-(ye-ys)*k/4;grid+=`<line x1="${ml}" y1="${yy.toFixed(1)}" x2="${ml+pw}" y2="${yy.toFixed(1)}" stroke="#eef1f4"/>`;ylab+=`<text x="${ml-5}" y="${(yy+3).toFixed(1)}" text-anchor="end" font-size="9" fill="#5a6b7d">${val.toFixed(0)}</text>`;}
+  let xlab=''; (o.xticks||[]).forEach(tk=>{const x=X(tk.v);xlab+=`<line x1="${x.toFixed(1)}" y1="${mt}" x2="${x.toFixed(1)}" y2="${mt+ph}" stroke="#f2f4f7"/><text x="${x.toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="9" fill="#5a6b7d">${tk.l}</text>`;});
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"><rect x="${ml}" y="${mt}" width="${pw}" height="${ph}" fill="#fbfcfd" stroke="#dfe4ea"/>${grid}${xlab}<path d="${path}" fill="none" stroke="${o.color||'#1c6fb0'}" stroke-width="1.7"/>${ylab}<text x="${ml+pw/2}" y="${H-0.5}" text-anchor="middle" font-size="9" fill="#5a6b7d">${o.xlabel||''}</text><text x="11" y="${mt+ph/2}" transform="rotate(-90 11 ${(mt+ph/2).toFixed(0)})" text-anchor="middle" font-size="9" fill="#5a6b7d">${o.ylabel||''}</text></svg>`;
+}
+function buildReportHTML(){
+  const g=STATE.grid, a=analyzeDVM(); if(!g) return '<p>No data.</p>';
+  const objs=detectObjects({}); const byClass={}; objs.forEach(o=>byClass[o.cls]=(byClass[o.cls]||0)+1);
+  const cal=currentCal(), af=STATE.freqs[STATE.activeFreq]||{};
+  const dep=g.dep, orient=g.orient;
+  const t0=new Date(g.time[0]).toISOString().replace('T',' ').slice(0,16), t1=new Date(g.time[g.nT-1]).toISOString().replace('T',' ').slice(0,16);
+  const dielPts=a?a.dielCM.map((v,h)=>[h,v]):[];
+  const cmPts=a?[]:[]; if(a){const stp=Math.max(1,Math.floor(g.nT/800));for(let t=0;t<g.nT;t+=stp)cmPts.push([g.time[t],a.cm[t]]);}
+  const xt=[]; if(a){const span=g.time[g.nT-1]-g.time[0];for(let k=0;k<=5;k++){const tt=g.time[0]+span*k/5;xt.push({v:tt,l:fmtTick(tt,span)});}}
+  const insights=buildInsightText(a).map(x=>`<li>${x}</li>`).join('');
+  const metricRows=a?[
+    ['Migration amplitude', isFinite(a.amplitude)?fmt(a.amplitude,1)+' m':'—'],
+    ['Day-time CM depth', isFinite(a.dayCM)?fmt(a.dayCM,1)+' m (~'+String(a.deH).padStart(2,'0')+':00 UTC)':'—'],
+    ['Night-time CM depth', isFinite(a.nightCM)?fmt(a.nightCM,1)+' m (~'+String(a.shH).padStart(2,'0')+':00 UTC)':'—'],
+    ['Mean CM depth', fmt(a.meanCM,1)+' m'],
+    ['Fastest descent', a.descentH>=0?String(a.descentH).padStart(2,'0')+':00 UTC':'—'],
+    ['Fastest ascent', a.ascentH>=0?String(a.ascentH).padStart(2,'0')+':00 UTC':'—'],
+    ['CM–temperature r', isFinite(a.tempCorr)?fmt(a.tempCorr,2):'—'],
+    ['Pattern', a.strong?(a.reverse?'Reverse DVM':'Normal DVM'):'No clear DVM']
+  ].map(r=>`<tr><td>${r[0]}</td><td class="n">${r[1]}</td></tr>`).join(''):'';
+  const dayRows=a?a.days.map(d=>`<tr><td>${d.date}</td><td class="n">${fmt(d.min,1)}</td><td class="n">${fmt(d.max,1)}</td><td class="n">${fmt(d.amp,1)}</td><td class="n">${fmt(d.mean,1)}</td></tr>`).join(''):'';
+  const objRows=Object.entries(byClass).map(([c,n])=>`<tr><td>${c}</td><td class="n">${n}</td></tr>`).join('')||'<tr><td colspan="2">none above threshold</td></tr>';
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>AZFP DVM Report — ${new Date(g.time[0]).toISOString().slice(0,10)}</title>
+<style>body{font:13px/1.6 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a2330;max-width:860px;margin:24px auto;padding:0 18px}
+h1{font-size:22px;margin:0 0 2px}h2{font-size:15px;margin:22px 0 6px;color:#1c6fb0;border-bottom:1px solid #e3e8ee;padding-bottom:3px}
+.sub{color:#6b7885;font-size:12px}table{border-collapse:collapse;width:100%;margin:6px 0;font-size:12.5px}
+td,th{border:1px solid #e3e8ee;padding:5px 8px;text-align:left}.n{text-align:right;font-variant-numeric:tabular-nums}
+th{background:#f5f8fb}ul{margin:6px 0}li{margin:3px 0}.kv td:first-child{color:#556}.foot{color:#8894a2;font-size:11px;margin-top:20px}
+.grid{display:flex;gap:14px;flex-wrap:wrap}.card{border:1px solid #e3e8ee;border-radius:8px;padding:10px;flex:1;min-width:260px}</style></head>
+<body>
+<h1>AZFP vertical-migration report</h1>
+<div class="sub">Generated ${new Date().toISOString().replace('T',' ').slice(0,16)} UTC · AZFP Studio</div>
+<h2>Deployment</h2>
+<table class="kv"><tr><td>Channel</td><td class="n">${af.freq||'—'} kHz</td></tr>
+<tr><td>Time span (UTC)</td><td class="n">${t0} → ${t1}</td></tr>
+<tr><td>Profiles</td><td class="n">${g.nT.toLocaleString()} × ${g.nB} bins</td></tr>
+<tr><td>Orientation / instrument depth</td><td class="n">${orient}-looking / ${fmt(dep,1)} m</td></tr>
+<tr><td>Sound speed / absorption</td><td class="n">${fmt(cal.c,1)} m/s / ${fmt(cal.alpha,3)} dB/m</td></tr></table>
+<h2>Key insights</h2><ul>${insights}</ul>
+<h2>Migration metrics</h2>
+<div class="grid"><div class="card"><b>Diel cycle — centre of mass vs hour (UTC)</b><br>${svgChart(dielPts,{flipY:true,xmin:0,xmax:23,xlabel:'Hour (UTC)',ylabel:'CM depth (m)',color:'#1c6fb0',xticks:[0,6,12,18,23].map(h=>({v:h,l:String(h).padStart(2,'0')}))})}</div>
+<div class="card"><b>Centre of mass vs time</b><br>${svgChart(cmPts,{flipY:true,xlabel:'Time (UTC)',ylabel:'CM depth (m)',color:'#2aa06a',xticks:xt})}</div></div>
+<table>${metricRows}</table>
+<h2>Per-day breakdown</h2>
+<table><thead><tr><th>Date</th><th class="n">Min CM</th><th class="n">Max CM</th><th class="n">Amplitude</th><th class="n">Mean CM</th></tr></thead><tbody>${dayRows}</tbody></table>
+<h2>Detected objects (current view, ≥ ${STATE.detThr!=null?STATE.detThr:defaultDetThr(g)} dB)</h2>
+<table><thead><tr><th>Class</th><th class="n">Count</th></tr></thead><tbody>${objRows}</tbody></table>
+<div class="foot">Metrics computed on backscatter-weighted centre of mass over physical depths (≥0 m). NASC after Woillez et al. (2007); indices of aggregation after Bez &amp; Rivoirard. Day/night inferred from the observed diel cycle. This report is generated automatically and should be reviewed before publication.</div>
+</body></html>`;
+}
+function downloadReport(){ downloadText('azfp_dvm_report.html', buildReportHTML(), 'text/html'); }
+
+/* ---- Insights tab ---- */
+function renderInsights(){
+  const el=$('#insightsBody');
+  if(!STATE.grid){ el.innerHTML=emptyMsg(); return; }
+  const a=analyzeDVM();
+  if(!a){ el.innerHTML=`<div class="banner">Not enough temporal coverage for a vertical-migration analysis.</div>`; return; }
+  const pad=h=>String(h).padStart(2,'0');
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px"><h4>Automated vertical-migration insights</h4>
+      <div class="sub">${a.freq} kHz · ${new Date(a.tArr[0]).toISOString().slice(0,10)} → ${new Date(a.tArr[a.tArr.length-1]).toISOString().slice(0,10)}</div>
+      <ul style="margin:8px 0 0;padding-left:18px">${buildInsightText(a).map(x=>`<li style="margin:4px 0">${x}</li>`).join('')}</ul>
+      <div class="btnrow" style="margin-top:12px">
+        <button class="primary" id="dlReport">⇩ Download full report (HTML)</button>
+        <button id="dlDvmCsv">⇩ DVM time series (CSV)</button>
+        <button id="reDetect" class="ghost">⦿ Detect objects</button>
+      </div></div>
+    <div class="grid3" style="margin-bottom:14px">
+      ${metricCard('Migration amplitude', isFinite(a.amplitude)?fmt(a.amplitude,1):'—', 'm — diel peak-to-peak of centre of mass')}
+      ${metricCard('Day-time depth', isFinite(a.dayCM)?fmt(a.dayCM,1):'—', 'm — CM near '+pad(a.deH)+':00 UTC')}
+      ${metricCard('Night-time depth', isFinite(a.nightCM)?fmt(a.nightCM,1):'—', 'm — CM near '+pad(a.shH)+':00 UTC')}
+      ${metricCard('Pattern', a.strong?(a.reverse?'Reverse':'Normal'):'None', a.strong?'DVM detected':'no clear diel cycle')}
+      ${metricCard('CM–temp r', isFinite(a.tempCorr)?fmt(a.tempCorr,2):'—', 'centre of mass vs temperature')}
+      ${metricCard('Days analysed', a.days.length, 'calendar days with data')}
+    </div>
+    <div class="grid2">
+      <div class="card"><h4>Diel cycle — centre of mass vs hour (UTC)</h4><div class="sub">Backscatter-weighted mean depth folded over 24 h</div><canvas id="cDiel" class="chartbox"></canvas></div>
+      <div class="card"><h4>Centre of mass vs time</h4><div class="sub">Full deployment</div><canvas id="cCMt" class="chartbox"></canvas></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h4>Per-day migration</h4>
+      <div style="max-height:220px;overflow:auto"><table><thead><tr><th>Date</th><th class="num">Min CM (m)</th><th class="num">Max CM (m)</th><th class="num">Amplitude (m)</th><th class="num">Mean CM (m)</th></tr></thead>
+      <tbody>${a.days.map(d=>`<tr><td>${d.date}</td><td class="num">${fmt(d.min,1)}</td><td class="num">${fmt(d.max,1)}</td><td class="num">${fmt(d.amp,1)}</td><td class="num">${fmt(d.mean,1)}</td></tr>`).join('')}</tbody></table></div></div>`;
+  lineChart($('#cDiel'),[{pts:a.dielCM.map((v,h)=>[h,v]),color:'#4cc4ff',w:2}],{flipY:true,xmin:0,xmax:23,xlabel:'Hour (UTC)',ylabel:'CM depth (m)',xfmt:v=>pad(v)});
+  const cmPts=[]; const stp=Math.max(1,Math.floor(a.tArr.length/1000)); for(let t=0;t<a.tArr.length;t+=stp)cmPts.push([a.tArr[t],a.cm[t]]);
+  lineChart($('#cCMt'),[{pts:cmPts,color:'#57e6a5',w:1.6}],{flipY:true,ylabel:'CM depth (m)',xfmt:axisTimeFmt(a.tArr)});
+  const dr=$('#dlReport'); if(dr)dr.onclick=downloadReport;
+  const dc=$('#dlDvmCsv'); if(dc)dc.onclick=()=>downloadCSV('azfp_dvm_series.csv',[['time_utc','cm_depth_m','nasc_m2_nmi2']].concat(a.tArr.map((t,i)=>[new Date(t).toISOString(),fmt(a.cm[i],2),fmt(a.nasc[i],2)])));
+  const rd=$('#reDetect'); if(rd)rd.onclick=()=>{runDetection();switchTab('annot');};
+}
+
 function switchTab(v){
   $$('.tab').forEach(t=>t.classList.toggle('on',t.dataset.v===v));
   $$('.view').forEach(s=>s.style.display=(s.dataset.view===v)?(s.dataset.view==='echogram'?'flex':'block'):'none');
   if(v==='echogram') requestAnimationFrame(()=>requestAnimationFrame(refreshEchogram));
   if(v==='vdist') renderVDist();
+  if(v==='insights') renderInsights();
   if(v==='ancillary') renderAncillary();
   if(v==='annot') renderAnnot();
   if(v==='batch') renderBatch();
@@ -1027,6 +1280,7 @@ function renderAnnot(){
     </tr>`;
   }).join('');
   el.innerHTML=`
+    ${detectionCardHTML()}
     <div class="card"><h4>Region annotations & classification</h4>
     <div class="sub">Select the <b>▭ Region</b> tool on the Echogram tab and drag a box. Stats recompute from the calibrated Sv grid.</div>
     ${STATE.annotations.length?`<table><thead><tr><th>Name</th><th>Class</th><th class="num">Depth (m)</th><th>Time</th><th class="num">Mean Sv</th><th class="num">NASC</th><th class="num">CM (m)</th><th>Note</th><th></th></tr></thead><tbody>${rows}</tbody></table>`:`<div class="mini">No regions yet.</div>`}
@@ -1040,6 +1294,7 @@ function renderAnnot(){
   const ex=$('#expRegions'); if(ex) ex.onclick=exportRegionsCSV;
   const exj=$('#expRegionsJson'); if(exj) exj.onclick=()=>downloadText('azfp_regions.json',JSON.stringify(STATE.annotations.map(r=>({...r,stats:regionStats(r)})),null,2));
   const cr=$('#clearRegions'); if(cr) cr.onclick=()=>{STATE.annotations=[];renderAnnot();};
+  wireDetection();
 }
 function regionStats(r){
   const g=STATE.grid; if(!g)return{};
@@ -1157,6 +1412,10 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <p>Echogram interpretation depends heavily on the colour mapping and on suppressing noise. The <b>Sv range</b> sliders set the colour limits; the <b>Auto</b> button scales them to the data (10th–99th percentile) and is applied automatically when data is loaded, so weak scattering layers are visible without manual tuning. Several visualization filters operate on the displayed grid (they do not alter the calibrated data used for metrics or export):</p>
   <p><b>Despeckle (median 3×3 / 5×5)</b> removes isolated impulse noise and single-target spikes while preserving layer edges. <b>Smooth (mean 3×3 / 5×5)</b> averages in the linear domain to enhance faint, spatially coherent layers. <b>Background removal</b> subtracts, for each depth, a low-percentile (time-persistent) background estimate — useful for removing constant electronic noise or near-field ringing bands (note it also removes time-invariant biological layers). The <b>threshold</b> slider masks everything below a chosen Sv (a noise floor), and the <b>contrast (γ)</b> slider applies a gamma curve to the colour mapping (values below 1 lift weak echoes, above 1 harden contrast). A <b>depth-limit</b> control restricts the displayed depth range; the depth axis is clamped to physical depths (0 m and below) so up-looking bins whose range exceeds the instrument depth are never shown as negative "above-surface" depths. A horizontal <b>Time zoom</b> tool plus an overview navigator support browsing long multi-day series.</p>
   <p><b>Within-burst structure.</b> In burst-averaged mode each burst is reduced to one profile, which can hide short-lived structure. Rather than keep every raw ping in memory, the app computes four streaming reductions per burst at ingest — <b>Mean</b> (calibrated backscatter), <b>Peak</b> (the strongest ping in the burst, revealing transient or sparse targets such as individual fish), <b>Floor</b> (the minimum, emphasising persistent layers), and <b>Variability</b> (within-burst standard deviation, highlighting motion and patchiness). The <b>Burst</b> selector switches between them, giving intra-burst contrast control at a fraction of the memory of full-resolution storage. Load in <b>Every-ping</b> mode to inspect individual pings directly.</p>
+
+  <h3>9 · Automated detection &amp; migration reports</h3>
+  <p><b>Object detection &amp; labelling.</b> On the Annotations tab, <i>Auto-detect</i> thresholds the calibrated Sv grid in the current view, groups contiguous above-threshold cells with a connected-component (8-neighbour flood-fill) pass, and classifies each patch from its shape and position: broad, time-persistent patches become <b>layers</b> (zooplankton); compact high-Sv blobs become <b>aggregations</b>; tiny strong patches become <b>fish / single targets</b>; patches against the surface or the instrument become <b>surface/ice</b> or <b>bottom</b>. Each detection is added as a labelled region with its mean/peak Sv, height and centre-of-mass depth, and can be edited or reclassified like any manual annotation. The threshold defaults to the 90th percentile of the visible Sv.</p>
+  <p><b>Vertical-migration insights &amp; reports.</b> The Insights tab computes the backscatter-weighted centre of mass over physical depths for every profile, folds it onto a 24-hour clock to isolate the diel cycle, and derives the migration amplitude, day- and night-time depths and the timing of fastest ascent and descent. It classifies the pattern (normal DVM, reverse DVM, or none), breaks the record down by day, and correlates centre-of-mass depth with temperature. A plain-language summary is generated automatically, and <i>Download full report</i> exports a self-contained HTML document (with inline SVG diel and time-series charts, metrics, a per-day table and a detected-object summary) suitable for archiving or sharing. These outputs are generated automatically and should be reviewed before publication.</p>
 
   <h3>Data-integrity note</h3>
   <p>The example files bundled with this project were altered by a text-mode transfer: high bytes (0x80–0xFF) were replaced with the Unicode replacement marker, which is <b>lossy and irreversible</b> for the acoustic amplitudes. AZFP Studio therefore ships with a synthetic demonstration deployment. Load your original binary <code>.01A</code> files (and the matching <code>.XML</code>) for real analysis — the parser reads the genuine format directly.</p>
