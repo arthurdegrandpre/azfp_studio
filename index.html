@@ -134,7 +134,7 @@ tr:hover td{background:#151d28}
   <aside>
     <h3>Data files</h3>
     <div class="drop" id="drop">
-      <div>Drop <b>.01A</b> / <b>.XML</b> / <b>.mfawcpl</b> here</div>
+      <div>Drop <b>.01A</b> / <b>.cfg</b> / <b>.mfawcpl</b> here</div>
       <div class="mini" style="margin-top:5px">or click to browse · multiple files OK</div>
       <input type="file" id="fileInput" multiple class="hidden"/>
     </div>
@@ -462,7 +462,7 @@ function tsFromCount(N,R,cal){
    is materialised as a Float32 Sv grid for rendering, keeping memory bounded
    even for multi-month deployments. */
 const STATE={files:[],freqs:[],activeFreq:0,grid:null,anc:null,annotations:[],
-  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5};
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5,cfg:null};
 
 // Burst-grouping parameters (memory management)
 const BURST={gap:90000, maxMs:1200000, maxPings:1000, fullMaxCols:400000};
@@ -540,6 +540,7 @@ function populateFreqSelector(){
   sel.value=STATE.activeFreq;
   const af=STATE.freqs[STATE.activeFreq];
   $('#freqPill').textContent=(af?af.freq:'—')+' kHz';
+  if(STATE.cfg)applyCfgFreq();
 }
 function estMemoryMB(){ let b=0; STATE.freqs.forEach(f=>{ b+=f.counts.byteLength+f.time.byteLength; if(f.countsMax)b+=f.countsMax.byteLength; if(f.countsMin)b+=f.countsMin.byteLength; if(f.countsStd)b+=f.countsStd.byteLength; }); if(STATE.grid) b+=STATE.grid.sv.byteLength; return b/1048576; }
 
@@ -570,14 +571,19 @@ function computeAncillary(){
   const rows=F.ancRows, n=rows.length, time=F.time;
   const t=new Array(n),temp=new Float32Array(n),tiltx=new Float32Array(n),tilty=new Float32Array(n),
         batt=new Float32Array(n),pres=new Float32Array(n),tiltmag=new Float32Array(n);
+  const S=STATE.cfg;
   for(let k=0;k<n;k++){
     const a=rows[k]||[0,0,0,0,0]; t[k]=time[k];
     const cx=a[0],cy=a[1],cb=a[2],cp=a[3],ct=a[4];
-    tiltx[k]=(cx-32768)/32768*45; tilty[k]=(cy-32768)/32768*45; tiltmag[k]=Math.sqrt(tiltx[k]**2+tilty[k]**2);
-    batt[k]=cb*2.5/65535*13.2; pres[k]=cp/65535*200;
-    const V=ct*2.5/65535,Ka=1.14,Kb=2.18,Kc=1.5; let Rt=(Ka+Kb*V)/(Kc-V); if(!(Rt>0))Rt=1e-6;
-    const A=6.1e-4,B=2.77e-4,C=1.55e-7,lnR=Math.log(Rt); let Tk=1/(A+B*lnR+C*lnR*lnR*lnR); temp[k]=Tk-273.15;
+    if(S&&S.tilt){ tiltx[k]=polyval(S.tilt.X,cx); tilty[k]=polyval(S.tilt.Y,cy); }
+    else { tiltx[k]=(cx-32768)/32768*45; tilty[k]=(cy-32768)/32768*45; }
+    tiltmag[k]=Math.sqrt(tiltx[k]**2+tilty[k]**2);
+    batt[k]=cb*2.5/65535*13.2;
+    if(S&&S.temp&&S.temp.kc!=null){ const vin=2.5*ct/65535; let Rt=(S.temp.ka+S.temp.kb*vin)/(S.temp.kc-vin); if(!(Rt>0))Rt=1e-6; const lnR=Math.log(Rt); temp[k]=1/(S.temp.A+S.temp.B*lnR+S.temp.C*lnR*lnR*lnR)-273; }
+    else { const V=ct*2.5/65535,Ka=1.14,Kb=2.18,Kc=1.5; let Rt=(Ka+Kb*V)/(Kc-V); if(!(Rt>0))Rt=1e-6; const A=6.1e-4,B=2.77e-4,C=1.55e-7,lnR=Math.log(Rt); temp[k]=1/(A+B*lnR+C*lnR*lnR*lnR)-273.15; }
     if(!isFinite(temp[k])) temp[k]=NaN;
+    if(S&&S.press){ if(S.press.installed&&S.press.a1){ const vin=2.5*cp/65535; pres[k]=vin*S.press.a1+(S.press.a0||0); } else pres[k]=NaN; }
+    else pres[k]=cp/65535*200;
   }
   STATE.anc={t,temp,tiltx,tilty,tiltmag,batt,pres};
 }
@@ -1399,7 +1405,7 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <p>Center of mass and inertia (after Woillez et al. 2007) summarise the mean depth and vertical spread of scatterers; the index of aggregation and equivalent area (Bez &amp; Rivoirard) describe patchiness. NASC is the standard area backscattering coefficient used for biomass work. The center-of-mass time series is the primary diagnostic for diel vertical migration.</p>
 
   <h3>5 · Ancillary sensors</h3>
-  <p>Tilt (X/Y), thermistor temperature (Steinhart–Hart), pressure and battery are decoded from the per-ping ancillary counts. Default conversion coefficients are used until the instrument's <code>.XML</code> file is loaded, at which point factory calibration is applied. These channels support quality control — instrument tilt affects the effective sampling volume, temperature drives the absorption coefficient, and pressure/battery track deployment integrity.</p>
+  <p>Tilt (X/Y), thermistor temperature (Steinhart–Hart), pressure and battery are decoded from the per-ping ancillary counts. Default conversion coefficients are used until the instrument's <code>.XML</code> file is loaded, at which point factory calibration is applied. These channels support quality control — instrument tilt affects the effective sampling volume, temperature drives the absorption coefficient, and pressure/battery track deployment integrity. The coefficient file may be an ASL <code>.cfg</code> (ULS5 format) or an equivalent <code>.XML</code>; AZFP Studio reads either, applies the per-frequency EL/DS/TVR/VTX0 and beam pattern (converted to an equivalent two-way beam angle, EBA = 10·log₁₀ BP) — switching coefficients automatically when the frequency changes — and applies the file's tilt polynomial and thermistor (Steinhart–Hart) coefficients to the ancillary decode, honouring the sensors-installed flags.</p>
 
   <h3>6 · Annotations & products</h3>
   <p>Regions drawn on the echogram are classified (zooplankton, fish, surface/ice, bottom, noise) and summarised with mean Sv, NASC and center of mass computed directly from the calibrated grid. All state — calibration, deployment, view and annotations — round-trips through the JSON <b>project</b> file. Batch export produces the Sv grid, CM/NASC time series, layer table and a session report for downstream analysis in R, Python or Echoview.</p>
@@ -1436,12 +1442,62 @@ function downloadText(name,text,type='text/plain'){
 function downloadCSV(name,rows){downloadText(name,rows.map(r=>r.map(c=>{c=String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(',')).join('\n'),'text/csv');}
 
 function renderFileList(){
-    $('#filelist').innerHTML=STATE.files.map((f,i)=>{const icon=f.type==='xml'?'\u2699 ':f.type==='log'?'\ud83d\udcdd ':f.type==='mfawcpl'?'\ud83d\udccb ':'\ud83d\udcca ';const span=(f._t0!=null)?(new Date(f._t0).toISOString().slice(11,16)+'\u2013'+new Date(f._t1).toISOString().slice(11,16)+' UTC'):'';const badge=f._pings?` <span class="mini">\u00b7 ${f._pings}p</span>`:'';return `<div class="filerow"><span class="nm" title="${f.name}${span?'  ('+span+')':''}">${icon}${f.name}${badge}</span><span class="rm" data-i="${i}">\u2715</span></div>`;}).join('');
+    $('#filelist').innerHTML=STATE.files.map((f,i)=>{const icon=(f.type==='xml'||f.type==='cfg')?'\u2699 ':f.type==='log'?'\ud83d\udcdd ':f.type==='mfawcpl'?'\ud83d\udccb ':'\ud83d\udcca ';const span=(f._t0!=null)?(new Date(f._t0).toISOString().slice(11,16)+'\u2013'+new Date(f._t1).toISOString().slice(11,16)+' UTC'):'';const badge=f._pings?` <span class="mini">\u00b7 ${f._pings}p</span>`:'';return `<div class="filerow"><span class="nm" title="${f.name}${span?'  ('+span+')':''}">${icon}${f.name}${badge}</span><span class="rm" data-i="${i}">\u2715</span></div>`;}).join('');
   $$('#filelist .rm').forEach(x=>x.onclick=e=>{STATE.files.splice(+e.target.dataset.i,1);renderFileList();updateProcessBtn();});
   updateProcessBtn();
 }
 function updateProcessBtn(){$('#processBtn').disabled=!STATE.files.some(f=>f.type==='data');}
-function classifyFile(name){const n=name.toLowerCase();if(n.endsWith('.mfawcpl'))return'mfawcpl';if(/\.(0\da|azfp)$/.test(n))return'data';if(n.endsWith('.xml'))return'xml';if(n.endsWith('.log'))return'log';if(n.endsWith('.json')||n.endsWith('.azfpproj'))return'proj';return'data';}
+/* ---- AZFP instrument coefficient file (.cfg / ULS5 XML): per-frequency
+     acoustics (EL,DS,TVR,VTX0,BP) + tilt & temperature sensor calibration ---- */
+function polyval(c,N){ if(!c)return null; return c[0]+c[1]*N+c[2]*N*N+c[3]*N*N*N; }
+function parseCfg(text){
+  try{
+    const xml=new DOMParser().parseFromString(text,'text/xml');
+    if(!xml.getElementsByTagName('LogAcousticCoefficients').length) return null;
+    const gnIn=(root,t)=>{const e=root?root.getElementsByTagName(t):[];return e.length?parseFloat(e[0].textContent):null;};
+    const first=t=>{const e=xml.getElementsByTagName(t);return e.length?e[0]:null;};
+    let serial=null; for(const e of xml.getElementsByTagName('SerialNumber')){const v=parseInt(e.textContent,10);if(v>0){serial=v;break;}}
+    const sf=first('SensorsFlag'); const pressInstalled=!!(sf&&sf.getAttribute('PressureSensorInstalled')==='yes');
+    const at=first('Analog_Temperature');
+    const temp=at?{ka:gnIn(at,'ka'),kb:gnIn(at,'kb'),kc:gnIn(at,'kc'),A:gnIn(at,'A'),B:gnIn(at,'B'),C:gnIn(at,'C')}:null;
+    const tl=first('AG_Tilt');
+    const tilt=tl?{X:[gnIn(tl,'X_a'),gnIn(tl,'X_b'),gnIn(tl,'X_c'),gnIn(tl,'X_d')],Y:[gnIn(tl,'Y_a'),gnIn(tl,'Y_b'),gnIn(tl,'Y_c'),gnIn(tl,'Y_d')]}:null;
+    const ap=first('Analog_Pressure');
+    const press={installed:pressInstalled,a0:gnIn(ap,'a0'),a1:gnIn(ap,'a1'),a2:gnIn(ap,'a2'),a3:gnIn(ap,'a3')};
+    const freqs={};
+    for(const fe of xml.getElementsByTagName('Frequency')){
+      const kh=fe.getElementsByTagName('kHz'); if(!kh.length)continue;
+      const fk=Math.round(parseFloat(kh[0].textContent));
+      const gv=t=>gnIn(fe,t), BP=gv('BP');
+      freqs[fk]={TVR:gv('TVR'),VTX0:gv('VTX0'),BP,EL:gv('EL'),DS:gv('DS'),minPulse:gv('MinPulseLen'),EBA:(BP&&BP>0)?10*log10(BP):null};
+    }
+    if(!Object.keys(freqs).length) return null;
+    return {serial,temp,tilt,press,freqs};
+  }catch(e){console.error('cfg parse failed',e);return null;}
+}
+function applyCfgFreq(){
+  const cfg=STATE.cfg; if(!cfg)return;
+  let fk=455; if(STATE.freqs&&STATE.freqs[STATE.activeFreq]) fk=STATE.freqs[STATE.activeFreq].freq;
+  const keys=Object.keys(cfg.freqs).map(Number); if(!keys.length)return;
+  let best=keys[0],bd=1e9; keys.forEach(k=>{const d=Math.abs(k-fk);if(d<bd){bd=d;best=k;}});
+  const c=cfg.freqs[best]; if(!c)return;
+  if(c.EL!=null)$('#cEL').value=c.EL;
+  if(c.DS!=null)$('#cDS').value=c.DS;
+  if(c.TVR!=null)$('#cTVR').value=c.TVR;
+  if(c.VTX0!=null)$('#cVTX').value=c.VTX0;
+  if(c.EBA!=null)$('#cEBA').value=(+c.EBA).toFixed(2);
+}
+function applyCfg(cfg,fname){
+  if(!cfg){toast('Could not read .cfg calibration');return false;}
+  STATE.cfg=cfg; STATE.xmlCal=cfg;
+  applyCfgFreq();
+  $('#calSrc').textContent='(.cfg S/N '+(cfg.serial||'?')+')';
+  $('#calNote').innerHTML='Instrument coefficients loaded from <b>'+(fname||'.cfg')+'</b> (S/N '+(cfg.serial||'?')+') for '+Object.keys(cfg.freqs).join(' &amp; ')+' kHz: EL, DS, TVR, VTX0 &amp; beam pattern per frequency, plus tilt &amp; temperature sensor calibration. Sv is now quantitatively calibrated.';
+  if(STATE.freqs&&STATE.freqs.length){ computeGrid(); autoRange(); } else refreshEchogram();
+  toast('Calibration loaded — S/N '+(cfg.serial||'?')+' · '+Object.keys(cfg.freqs).join(', ')+' kHz');
+  return true;
+}
+function classifyFile(name){const n=name.toLowerCase();if(n.endsWith('.mfawcpl'))return'mfawcpl';if(n.endsWith('.cfg'))return'cfg';if(/\.(0\da|azfp)$/.test(n))return'data';if(n.endsWith('.xml'))return'xml';if(n.endsWith('.log'))return'log';if(n.endsWith('.json')||n.endsWith('.azfpproj'))return'proj';return'data';}
 async function ingestFiles(fileList){
   STATE.files=STATE.files.filter(f=>!f.demo && f.buf);   // drop the auto-loaded demo when real files arrive
   for(const file of fileList){
@@ -1449,7 +1505,7 @@ async function ingestFiles(fileList){
     if(type==='proj'){ const txt=await file.text(); try{loadProjectObj(JSON.parse(txt));toast('Project loaded');}catch(e){toast('Bad project file');} continue; }
     const buf=await file.arrayBuffer();
     STATE.files.push({name:file.name,type,buf});
-    if(type==='xml'){const cal=parseXMLcal(new TextDecoder().decode(buf));applyXMLcal(cal);}
+    if(type==='xml'||type==='cfg'){const txt=new TextDecoder().decode(buf);const cfg=parseCfg(txt);if(cfg){applyCfg(cfg,file.name);}else{applyXMLcal(parseXMLcal(txt));}}
     if(type==='mfawcpl'){const cfg=parseMfawcpl(new TextDecoder().decode(buf));applyMfawcpl(cfg);}
   }
   renderFileList();
@@ -1619,7 +1675,7 @@ function initUI(){
   $('#projInput').onchange=async e=>{const f=e.target.files[0];if(f){try{loadProjectObj(JSON.parse(await f.text()));toast('Project loaded');}catch(err){toast('Bad project file');}}e.target.value='';};
   // calibration + deployment recompute
   ['cC','cEL','cDS','cTVR','cVTX','cEBA','cAlpha','cTau','depDepth'].forEach(id=>{$('#'+id).addEventListener('change',()=>{if(STATE.freqs.length){computeGrid();refreshEchogram();}});});
-  $('#chanSel').onchange=e=>{STATE.activeFreq=+e.target.value;$('#freqPill').textContent=(STATE.freqs[STATE.activeFreq]?.freq||'—')+' kHz';computeGrid();refreshEchogram();};
+  $('#chanSel').onchange=e=>{STATE.activeFreq=+e.target.value;$('#freqPill').textContent=(STATE.freqs[STATE.activeFreq]?.freq||'—')+' kHz';if(STATE.cfg)applyCfgFreq();computeGrid();refreshEchogram();};
   $('#resSel').onchange=e=>{STATE.resolution=e.target.value;if(STATE.files.some(f=>f.demo)){loadDemo();}else if(STATE.files.some(f=>f.type==='data'&&f.buf)){processData();}else{toast('Re-drop your .01A files to apply the new load mode');}};
   $$('#orientSeg button').forEach(b=>b.onclick=()=>{$$('#orientSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');if(STATE.freqs.length){computeGrid();refreshEchogram();}});
   // echogram toolbar
