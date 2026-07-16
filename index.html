@@ -214,6 +214,10 @@ tr:hover td{background:#151d28}
           <select id="pingAvg"><option value="1">none</option><option value="3">3 pings</option><option value="6">6 pings</option><option value="12">12 pings</option></select>
         </div>
         <div class="grp">
+          <label title="How pings are combined when denser than the screen — Peak preserves thin targets">Pool</label>
+          <select id="poolSel"><option value="mean">Mean</option><option value="peak">Peak</option></select>
+        </div>
+        <div class="grp">
           <label title="Within-burst reduction (burst mode) — recovers detail lost to averaging">Burst</label>
           <select id="burstStat"><option value="mean">Mean</option><option value="max">Peak</option><option value="min">Floor</option><option value="std">Variability</option></select>
         </div>
@@ -230,6 +234,12 @@ tr:hover td{background:#151d28}
           <label title="Hide values below this Sv (noise floor)">Thr</label>
           <input type="range" id="threshold" class="narrow" min="-120" max="-30" value="-120"/>
           <span class="pill" id="thrLbl">off</span>
+        </div>
+        <div class="grp filt">
+          <label title="Compensate for deep signals appearing weaker">Depth norm</label>
+          <select id="depthNormSel"><option value="off">Off</option><option value="gain">Deep gain</option><option value="equalize">Equalize</option></select>
+          <input type="range" id="depthNormAmt" class="narrow" min="0" max="100" step="1" value="40"/>
+          <span class="pill" id="depthNormLbl">off</span>
         </div>
         <div class="grp">
           <label title="Restrict the displayed depth range">Depth (m)</label>
@@ -462,7 +472,7 @@ function tsFromCount(N,R,cal){
    is materialised as a Float32 Sv grid for rendering, keeping memory bounded
    even for multi-month deployments. */
 const STATE={files:[],freqs:[],activeFreq:0,grid:null,anc:null,annotations:[],
-  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5,cfg:null};
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5,cfg:null,pool:'mean',depthNorm:'off',depthNormAmt:40};
 
 // Burst-grouping parameters (memory management)
 const BURST={gap:90000, maxMs:1200000, maxPings:1000, fullMaxCols:400000};
@@ -646,21 +656,50 @@ const CLASS_COLORS={zooplankton:'#57e6a5',aggregation:'#ff8fb0',fish:'#ffb454','
 function clampDepthView(){const my=STATE.minY||0,v=STATE.view; if(v.y0<my-1e-9){let y1=(v.y1>my)?v.y1:1; if(y1-my<0.02)y1=Math.min(1,my+0.02); STATE.view={...v,y0:my,y1};}}
 function renderEchogramBitmap(){
   const g=STATE.grid; if(!g)return; clampDepthView();
-  const v=STATE.view, MAXBMP=4000, userAvg=Math.max(1,+$('#pingAvg').value||1), nB=g.nB;
+  const v=STATE.view, userAvg=Math.max(1,+$('#pingAvg').value||1), nB=g.nB, sv=g.sv, wrap=$('#egwrap'), dpr=window.devicePixelRatio||1;
   const c0=Math.max(0,Math.floor(v.x0*g.nT)), c1=Math.min(g.nT,Math.ceil(v.x1*g.nT)), span=Math.max(1,c1-c0);
-  const colStep=Math.max(userAvg, Math.ceil(span/MAXBMP)), nBmp=Math.max(1,Math.ceil(span/colStep));
-  // 1) aggregate the visible window into a display grid D[t*nB+i] (energetic mean)
-  const D=new Float32Array(nBmp*nB);
-  for(let t=0;t<nBmp;t++){const a0=c0+t*colStep,a1=Math.min(c1,a0+colStep);
-    for(let i=0;i<nB;i++){let acc=0,cnt=0;for(let cc=a0;cc<a1;cc++){acc+=Math.pow(10,g.sv[cc*nB+i]/10);cnt++;}D[t*nB+i]=10*log10(acc/Math.max(1,cnt));}}
-  // 2) visualization filtering (despeckle / smooth / background removal / threshold)
-  const F=applyVizFilter(D,nBmp,nB);
-  // 3) colour to bitmap
-  const off=document.createElement('canvas'); off.width=nBmp; off.height=nB;
-  const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,nB);
+  // Pool the visible window to the ACTUAL plot pixel resolution so no source column or
+  // depth bin is silently dropped by nearest-neighbour scaling (fixes fine-detail loss).
+  const plotWpx=Math.max(1,Math.round(((wrap?wrap.clientWidth:900)-AX.left-AX.right)*dpr));
+  const plotHpx=Math.max(1,Math.round(((wrap?wrap.clientHeight:500)-AX.top-AX.bottom)*dpr));
+  const nBmp=Math.max(1,Math.min(Math.ceil(span/userAvg), plotWpx, 8000));
+  const nRow=Math.max(1,Math.min(nB, plotHpx, 4000));
+  const peak=(STATE.pool==='peak'), MAXS=48;
+  const D=new Float32Array(nBmp*nRow);
+  for(let t=0;t<nBmp;t++){
+    let a0=c0+Math.floor(t*span/nBmp), a1=c0+Math.floor((t+1)*span/nBmp); if(a1<=a0)a1=a0+1; if(a1>c1)a1=c1;
+    const cstep=Math.max(1,Math.floor((a1-a0)/MAXS));
+    for(let r=0;r<nRow;r++){
+      let ib0=Math.floor(r*nB/nRow), ib1=Math.floor((r+1)*nB/nRow); if(ib1<=ib0)ib1=ib0+1; if(ib1>nB)ib1=nB;
+      const rstep=Math.max(1,Math.floor((ib1-ib0)/MAXS));
+      let acc=0,cnt=0,mx=-1e30;
+      for(let cc=a0;cc<a1;cc+=cstep){const base=cc*nB;
+        for(let ii=ib0;ii<ib1;ii+=rstep){const s=sv[base+ii]; if(peak){if(s>mx)mx=s;} else {acc+=Math.pow(10,s/10);cnt++;}}}
+      D[t*nRow+r]= peak? mx : 10*log10(acc/Math.max(1,cnt));
+    }
+  }
+  applyDepthNorm(D,nBmp,nRow);
+  const F=applyVizFilter(D,nBmp,nRow);
+  const off=document.createElement('canvas'); off.width=nBmp; off.height=nRow;
+  const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,nRow);
   const smin=+$('#svMin').value, smax=+$('#svMax').value, rng=(smax-smin)||1, gam=STATE.gamma||1;
-  for(let t=0;t<nBmp;t++)for(let i=0;i<nB;i++){const val=F[t*nB+i];let norm=(val<=-900)?-1:(val-smin)/rng;if(norm>0&&gam!==1)norm=Math.pow(norm>1?1:norm,gam);const[r,gg,b]=cmap(STATE.palette,norm),idx=(i*nBmp+t)*4;img.data[idx]=r;img.data[idx+1]=gg;img.data[idx+2]=b;img.data[idx+3]=255;}
-  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB, wx0:c0/g.nT, wx1:c1/g.nT};
+  for(let t=0;t<nBmp;t++)for(let r=0;r<nRow;r++){const val=F[t*nRow+r];let norm=(val<=-900)?-1:(val-smin)/rng;if(norm>0&&gam!==1)norm=Math.pow(norm>1?1:norm,gam);const[cr,cg,cb]=cmap(STATE.palette,norm),idx=(r*nBmp+t)*4;img.data[idx]=cr;img.data[idx+1]=cg;img.data[idx+2]=cb;img.data[idx+3]=255;}
+  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB:nRow, wx0:c0/g.nT, wx1:c1/g.nT};
+}
+/* adjustable depth (range) normalization to counter weaker deep signals */
+function applyDepthNorm(D,W,H){
+  const mode=STATE.depthNorm||'off'; if(mode==='off'||H<2)return;
+  const amt=STATE.depthNormAmt||0;
+  if(mode==='gain'){                       // add up to (amt*0.4) dB, increasing with depth (deep=bottom row)
+    const gmax=amt*0.4;
+    for(let r=0;r<H;r++){const add=gmax*(r/(H-1)); if(add)for(let t=0;t<W;t++){if(D[t*H+r]>-900)D[t*H+r]+=add;}}
+  } else if(mode==='equalize'){            // remove the per-depth time-mean trend (blend 0..1)
+    const blend=clamp(amt/100,0,1); if(blend<=0)return;
+    const rowDb=new Float32Array(H); let overall=0,oc=0;
+    for(let r=0;r<H;r++){let acc=0,cnt=0;for(let t=0;t<W;t++){const s=D[t*H+r];if(s>-900){acc+=Math.pow(10,s/10);cnt++;}}const m=cnt?10*log10(acc/cnt):-999;rowDb[r]=m;if(m>-900){overall+=m;oc++;}}
+    overall=oc?overall/oc:0;
+    for(let r=0;r<H;r++){const corr=(rowDb[r]>-900)?blend*(rowDb[r]-overall):0; if(corr)for(let t=0;t<W;t++){if(D[t*H+r]>-900)D[t*H+r]-=corr;}}
+  }
 }
 /* ---- visualization filters (operate on the display grid, dB values) ---- */
 function applyVizFilter(D,W,H){
@@ -1417,6 +1456,7 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <h3>8 · Display, contrast &amp; noise filtering</h3>
   <p>Echogram interpretation depends heavily on the colour mapping and on suppressing noise. The <b>Sv range</b> sliders set the colour limits; the <b>Auto</b> button scales them to the data (10th–99th percentile) and is applied automatically when data is loaded, so weak scattering layers are visible without manual tuning. Several visualization filters operate on the displayed grid (they do not alter the calibrated data used for metrics or export):</p>
   <p><b>Despeckle (median 3×3 / 5×5)</b> removes isolated impulse noise and single-target spikes while preserving layer edges. <b>Smooth (mean 3×3 / 5×5)</b> averages in the linear domain to enhance faint, spatially coherent layers. <b>Background removal</b> subtracts, for each depth, a low-percentile (time-persistent) background estimate — useful for removing constant electronic noise or near-field ringing bands (note it also removes time-invariant biological layers). The <b>threshold</b> slider masks everything below a chosen Sv (a noise floor), and the <b>contrast (γ)</b> slider applies a gamma curve to the colour mapping (values below 1 lift weak echoes, above 1 harden contrast). A <b>depth-limit</b> control restricts the displayed depth range; the depth axis is clamped to physical depths (0 m and below) so up-looking bins whose range exceeds the instrument depth are never shown as negative "above-surface" depths. A horizontal <b>Time zoom</b> tool plus an overview navigator support browsing long multi-day series.</p>
+  <p><b>Rendering fidelity &amp; depth normalization.</b> The echogram is resampled directly to the plot's pixel resolution using a selectable reducer — <b>Mean</b> (energetic average) or <b>Peak</b> (maximum), the latter preserving thin transient targets that a plain average or nearest-neighbour downsample would drop — so no source ping or depth bin is silently discarded at any zoom. Because spreading and absorption make deeper (longer-range) echoes appear weaker even after TVG, an adjustable <b>Depth normalization</b> is provided: <i>Deep gain</i> adds a depth-increasing gain (up to the slider value) to the display, and <i>Equalize</i> removes the per-depth time-mean so features at every depth are shown with comparable contrast. Both act on the display only and do not change the calibrated Sv used for metrics or export.</p>
   <p><b>Within-burst structure.</b> In burst-averaged mode each burst is reduced to one profile, which can hide short-lived structure. Rather than keep every raw ping in memory, the app computes four streaming reductions per burst at ingest — <b>Mean</b> (calibrated backscatter), <b>Peak</b> (the strongest ping in the burst, revealing transient or sparse targets such as individual fish), <b>Floor</b> (the minimum, emphasising persistent layers), and <b>Variability</b> (within-burst standard deviation, highlighting motion and patchiness). The <b>Burst</b> selector switches between them, giving intra-burst contrast control at a fraction of the memory of full-resolution storage. Load in <b>Every-ping</b> mode to inspect individual pings directly.</p>
 
   <h3>9 · Automated detection &amp; migration reports</h3>
@@ -1656,6 +1696,7 @@ function loadDemo(){
 /* ==========================================================================
    10. WIRE-UP
    ========================================================================== */
+function updateDepthNormLbl(){const l=$('#depthNormLbl');if(!l)return;const m=STATE.depthNorm,a=STATE.depthNormAmt;l.textContent=(m==='off')?'off':(m==='gain')?('+'+(a*0.4).toFixed(0)+' dB'):(a+'%');}
 function initUI(){
   // tabs
   $$('.tab').forEach(t=>t.onclick=()=>switchTab(t.dataset.v));
@@ -1689,6 +1730,9 @@ function initUI(){
   $('#depTop').oninput=onDepthSlider; $('#depBot').oninput=onDepthSlider;
   $('#burstStat').onchange=e=>{STATE.burstStat=e.target.value;computeGrid();refreshEchogram();};
   $('#gamma').oninput=e=>{STATE.gamma=+e.target.value;refreshEchogram();};
+  $('#poolSel').onchange=e=>{STATE.pool=e.target.value;refreshEchogram();};
+  $('#depthNormSel').onchange=e=>{STATE.depthNorm=e.target.value;updateDepthNormLbl();refreshEchogram();};
+  $('#depthNormAmt').oninput=e=>{STATE.depthNormAmt=+e.target.value;updateDepthNormLbl();refreshEchogram();};
   $$('.tools button[data-tool]').forEach(b=>b.onclick=()=>{STATE.tool=b.dataset.tool;$$('.tools button[data-tool]').forEach(x=>x.classList.toggle('on',x===b));$('#egCanvas').style.cursor=({region:'crosshair',zoom:'zoom-in',tzoom:'col-resize',pan:'grab'}[b.dataset.tool]||'grab');});
   $('#resetView').onclick=()=>{STATE.view={x0:0,x1:1,y0:0,y1:1};refreshEchogram();};
   $('#exportPng').onclick=()=>{const cv=$('#egCanvas');cv.toBlob(b=>{const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='azfp_echogram.png';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);});toast('Echogram PNG saved');};
