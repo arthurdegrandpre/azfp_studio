@@ -215,7 +215,7 @@ tr:hover td{background:#151d28}
         </div>
         <div class="grp">
           <label title="How pings are combined when denser than the screen — Peak preserves thin targets">Pool</label>
-          <select id="poolSel"><option value="mean">Mean</option><option value="peak">Peak</option></select>
+          <select id="poolSel"><option value="mean">Mean</option><option value="peak">Peak</option><option value="none">None (native)</option></select>
         </div>
         <div class="grp">
           <label title="Within-burst reduction (burst mode) — recovers detail lost to averaging">Burst</label>
@@ -662,15 +662,18 @@ function renderEchogramBitmap(){
   // depth bin is silently dropped by nearest-neighbour scaling (fixes fine-detail loss).
   const plotWpx=Math.max(1,Math.round(((wrap?wrap.clientWidth:900)-AX.left-AX.right)*dpr));
   const plotHpx=Math.max(1,Math.round(((wrap?wrap.clientHeight:500)-AX.top-AX.bottom)*dpr));
-  const nBmp=Math.max(1,Math.min(Math.ceil(span/userAvg), plotWpx, 8000));
-  const nRow=Math.max(1,Math.min(nB, plotHpx, 4000));
-  const peak=(STATE.pool==='peak'), MAXS=48;
+  const pool=STATE.pool||'mean', native=(pool==='none'), peak=(pool==='peak'), MAXS=48;
+  // "None" renders at native resolution (one column per ping, one row per bin — no averaging);
+  // otherwise pool to the plot's pixel resolution so nothing is silently dropped.
+  const nBmp=native?Math.max(1,Math.min(span,16000)):Math.max(1,Math.min(Math.ceil(span/userAvg), plotWpx, 8000));
+  const nRow=native?Math.max(1,Math.min(nB,4000)):Math.max(1,Math.min(nB, plotHpx, 4000));
   const D=new Float32Array(nBmp*nRow);
   for(let t=0;t<nBmp;t++){
     let a0=c0+Math.floor(t*span/nBmp), a1=c0+Math.floor((t+1)*span/nBmp); if(a1<=a0)a1=a0+1; if(a1>c1)a1=c1;
     const cstep=Math.max(1,Math.floor((a1-a0)/MAXS));
     for(let r=0;r<nRow;r++){
       let ib0=Math.floor(r*nB/nRow), ib1=Math.floor((r+1)*nB/nRow); if(ib1<=ib0)ib1=ib0+1; if(ib1>nB)ib1=nB;
+      if(native){ D[t*nRow+r]=sv[a0*nB+ib0]; continue; }   // point sample — raw, no averaging
       const rstep=Math.max(1,Math.floor((ib1-ib0)/MAXS));
       let acc=0,cnt=0,mx=-1e30;
       for(let cc=a0;cc<a1;cc+=cstep){const base=cc*nB;
@@ -1456,7 +1459,7 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <h3>8 · Display, contrast &amp; noise filtering</h3>
   <p>Echogram interpretation depends heavily on the colour mapping and on suppressing noise. The <b>Sv range</b> sliders set the colour limits; the <b>Auto</b> button scales them to the data (10th–99th percentile) and is applied automatically when data is loaded, so weak scattering layers are visible without manual tuning. Several visualization filters operate on the displayed grid (they do not alter the calibrated data used for metrics or export):</p>
   <p><b>Despeckle (median 3×3 / 5×5)</b> removes isolated impulse noise and single-target spikes while preserving layer edges. <b>Smooth (mean 3×3 / 5×5)</b> averages in the linear domain to enhance faint, spatially coherent layers. <b>Background removal</b> subtracts, for each depth, a low-percentile (time-persistent) background estimate — useful for removing constant electronic noise or near-field ringing bands (note it also removes time-invariant biological layers). The <b>threshold</b> slider masks everything below a chosen Sv (a noise floor), and the <b>contrast (γ)</b> slider applies a gamma curve to the colour mapping (values below 1 lift weak echoes, above 1 harden contrast). A <b>depth-limit</b> control restricts the displayed depth range; the depth axis is clamped to physical depths (0 m and below) so up-looking bins whose range exceeds the instrument depth are never shown as negative "above-surface" depths. A horizontal <b>Time zoom</b> tool plus an overview navigator support browsing long multi-day series.</p>
-  <p><b>Rendering fidelity &amp; depth normalization.</b> The echogram is resampled directly to the plot's pixel resolution using a selectable reducer — <b>Mean</b> (energetic average) or <b>Peak</b> (maximum), the latter preserving thin transient targets that a plain average or nearest-neighbour downsample would drop — so no source ping or depth bin is silently discarded at any zoom. Because spreading and absorption make deeper (longer-range) echoes appear weaker even after TVG, an adjustable <b>Depth normalization</b> is provided: <i>Deep gain</i> adds a depth-increasing gain (up to the slider value) to the display, and <i>Equalize</i> removes the per-depth time-mean so features at every depth are shown with comparable contrast. Both act on the display only and do not change the calibrated Sv used for metrics or export.</p>
+  <p><b>Rendering fidelity &amp; depth normalization.</b> The echogram is resampled directly to the plot's pixel resolution using a selectable reducer — <b>Mean</b> (energetic average), <b>Peak</b> (maximum, which preserves thin transient targets a plain average or nearest-neighbour downsample would drop), or <b>None</b> to disable pooling entirely and render at native resolution (one column per ping, one row per bin) for maximum granularity — so no source ping or depth bin is silently discarded at any zoom. Because spreading and absorption make deeper (longer-range) echoes appear weaker even after TVG, an adjustable <b>Depth normalization</b> is provided: <i>Deep gain</i> adds a depth-increasing gain (up to the slider value) to the display, and <i>Equalize</i> removes the per-depth time-mean so features at every depth are shown with comparable contrast. Both act on the display only and do not change the calibrated Sv used for metrics or export.</p>
   <p><b>Within-burst structure.</b> In burst-averaged mode each burst is reduced to one profile, which can hide short-lived structure. Rather than keep every raw ping in memory, the app computes four streaming reductions per burst at ingest — <b>Mean</b> (calibrated backscatter), <b>Peak</b> (the strongest ping in the burst, revealing transient or sparse targets such as individual fish), <b>Floor</b> (the minimum, emphasising persistent layers), and <b>Variability</b> (within-burst standard deviation, highlighting motion and patchiness). The <b>Burst</b> selector switches between them, giving intra-burst contrast control at a fraction of the memory of full-resolution storage. Load in <b>Every-ping</b> mode to inspect individual pings directly.</p>
 
   <h3>9 · Automated detection &amp; migration reports</h3>
