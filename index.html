@@ -524,6 +524,46 @@ function routePing(acc, ping){
     a.last=ping.time;
   }
 }
+/* AZFP files are often PHASE files (same YYMMDDhh basename, .01A/.02A/... =
+   phase number), each holding that phase's bursts spread over the whole day.
+   Concatenating them in filename order therefore yields non-monotonic time, so
+   every frequency's columns are re-sorted chronologically after ingest. */
+function permuteRows(buf,nB,order,visited){
+  const n=order.length, tmp=new Uint16Array(nB); visited.fill(0);
+  for(let start=0;start<n;start++){
+    if(visited[start])continue;
+    if(order[start]===start){visited[start]=1;continue;}
+    tmp.set(buf.subarray(start*nB,start*nB+nB));
+    let j=start;
+    while(true){
+      visited[j]=1; const src=order[j];
+      if(src===start){ buf.set(tmp,j*nB); break; }
+      buf.copyWithin(j*nB, src*nB, src*nB+nB);
+      j=src;
+    }
+  }
+}
+function sortFreqByTime(F){
+  const n=F.nT; if(n<2) return 0;
+  let inv=0; for(let i=1;i<n;i++) if(F.time[i]<F.time[i-1]) inv++;
+  if(!inv) return 0;
+  const order=new Int32Array(n); for(let i=0;i<n;i++)order[i]=i;
+  const t=F.time; Array.prototype.sort.call(order,(a,b)=>(t[a]-t[b])||(a-b));
+  const visited=new Uint8Array(n);
+  for(const key of ['counts','countsMax','countsMin','countsStd']){ if(F[key]) permuteRows(F[key],F.nB,order,visited); }
+  const nt=new Float64Array(n), ns=new Array(n), na=new Array(n);
+  for(let i=0;i<n;i++){const o=order[i]; nt[i]=F.time[o]; ns[i]=F.srcs[o]; na[i]=F.ancRows[o];}
+  F.time=nt; F.srcs=ns; F.ancRows=na;
+  return inv;
+}
+function timeDiagnostics(){
+  const F=STATE.freqs[STATE.activeFreq]; if(!F||F.nT<2)return null;
+  const t=F.time,n=F.nT; let inv=0,dup=0,minDt=Infinity,maxDt=-Infinity;
+  const d=[]; for(let i=1;i<n;i++){const dt=t[i]-t[i-1]; if(dt<0)inv++; else if(dt===0)dup++; if(dt<minDt)minDt=dt; if(dt>maxDt)maxDt=dt; if(d.length<5000)d.push(dt);} 
+  d.sort((a,b)=>a-b); const med=d[d.length>>1];
+  return {n,inversions:inv,duplicates:dup,medianDtS:med/1000,minDtS:minDt/1000,maxGapS:maxDt/1000,
+    sortedApplied:STATE.timeFix?STATE.timeFix.total:0, perFile:STATE.timeFix?STATE.timeFix.perFreq:null};
+}
 function finalizeFreqs(acc){
   if(STATE.resolution!=='full') for(const a of acc.F.values()) flushBurst(a);
   const freqs=[];
@@ -537,6 +577,9 @@ function finalizeFreqs(acc){
       time:Float64Array.from(a.times), srcs:a.srcs, ancRows:a.ancRows});
   }
   freqs.sort((x,y)=>x.freq-y.freq);
+  let fixTotal=0; const perFreq={};
+  freqs.forEach(F=>{const k=sortFreqByTime(F); if(k){fixTotal+=k;perFreq[F.freq+' kHz']=k;}});
+  STATE.timeFix={total:fixTotal,perFreq};
   STATE.freqs=freqs;
   let best=0,bd=1e9; freqs.forEach((f,i)=>{const d=Math.abs((f.freq||0)-455);if(d<bd){bd=d;best=i;}});
   STATE.activeFreq=best;
@@ -687,7 +730,7 @@ function renderEchogramBitmap(){
   const ctx=off.getContext('2d'), img=ctx.createImageData(nBmp,nRow);
   const smin=+$('#svMin').value, smax=+$('#svMax').value, rng=(smax-smin)||1, gam=STATE.gamma||1;
   for(let t=0;t<nBmp;t++)for(let r=0;r<nRow;r++){const val=F[t*nRow+r];let norm=(val<=-900)?-1:(val-smin)/rng;if(norm>0&&gam!==1)norm=Math.pow(norm>1?1:norm,gam);const[cr,cg,cb]=cmap(STATE.palette,norm),idx=(r*nBmp+t)*4;img.data[idx]=cr;img.data[idx+1]=cg;img.data[idx+2]=cb;img.data[idx+3]=255;}
-  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB:nRow, wx0:c0/g.nT, wx1:c1/g.nT};
+  ctx.putImageData(img,0,0); egImg={canvas:off,nT:nBmp,nB:nRow, wx0:c0/g.nT, wx1:c1/g.nT, pool, pingsPerCol:span/nBmp, binsPerRow:nB/nRow};
 }
 /* adjustable depth (range) normalization to counter weaker deep signals */
 function applyDepthNorm(D,W,H){
@@ -889,7 +932,12 @@ function initEgEvents(){
       const g=STATE.grid,ti=clamp(Math.round((STATE.view.x0+(STATE.view.x1-STATE.view.x0)*f.fx)*(g.nT-1)),0,g.nT-1),
             bi=clamp(Math.round((STATE.view.y0+(STATE.view.y1-STATE.view.y0)*f.fy)*(g.nB-1)),0,g.nB-1);
       const sv=g.sv[ti*g.nB+bi];
-      $('#readout').innerHTML=`Sv <b>${fmt(sv,1)}</b> dB · depth <b>${fmt(g.depth[bi],1)}</b> m<br>R ${fmt(g.range[bi],1)} m · ${new Date(g.time[ti]).toISOString().slice(11,19)}`;
+      let agg='';
+      if(STATE.resolution==='burst') agg='column = burst '+STATE.burstStat;
+      const ppc=egImg?egImg.pingsPerCol:1, bpr=egImg?egImg.binsPerRow:1, pool=egImg?egImg.pool:'mean';
+      if(ppc>1.05||bpr>1.05){ const red=pool==='peak'?'peak':pool==='none'?'sample':'mean'; agg+=(agg?' · ':'')+'pixel ≈ '+red+' of '+Math.round(ppc)+'×'+Math.round(bpr)+' cells'; }
+      else if(pool==='none') agg+=(agg?' · ':'')+'native 1:1 (no pooling)';
+      $('#readout').innerHTML=`Sv <b>${fmt(sv,1)}</b> dB · depth <b>${fmt(g.depth[bi],1)}</b> m<br>R ${fmt(g.range[bi],1)} m · ${new Date(g.time[ti]).toISOString().slice(11,19)}${agg?`<br><span style="color:var(--mut);font-size:11px">${agg} · value = exact cell</span>`:''}`;
     }
     if(dragRegion&&panStart){const c=viewCoord(f.fx,f.fy);dragRegion.x1=c.x;dragRegion.y1=c.y;drawEchogram();}
     else if(STATE.tool==='pan'&&panStart){
@@ -1360,10 +1408,64 @@ function exportRegionsCSV(){
 }
 
 /* ---- Automation / Batch tab ---- */
+function medianDt(time){ if(!time||time.length<2)return null; const d=[],lim=Math.min(time.length,3000); for(let i=1;i<lim;i++)d.push(time[i]-time[i-1]); d.sort((a,b)=>a-b); return d[d.length>>1]; }
+function dataStructure(){
+  const g=STATE.grid; if(!g)return null;
+  const F=STATE.freqs[STATE.activeFreq]||{}, geom=F.geom||{}, cal=currentCal();
+  const digRate=geom.dig_rate||64000, rspb=geom.range_spb||1, lockout=geom.lockout||0, pulse=geom.pulse||0, c=cal.c;
+  const nativeSample=c/(2*digRate), dz=rspb*nativeSample, startR=lockout*nativeSample, maxR=startR+g.nB*dz;
+  const pulseRes=c*(pulse*1e-6)/2, dt=medianDt(g.time), span=g.time[g.nT-1]-g.time[0];
+  const d0=Math.min(g.depth[0],g.depth[g.nB-1]), d1=Math.max(g.depth[0],g.depth[g.nB-1]);
+  return {frequency_khz:F.freq,serial:STATE.cfg?STATE.cfg.serial:null,rows_bins:g.nB,cols_profiles:g.nT,
+    load_mode:STATE.resolution,burst_stat:STATE.resolution==='burst'?STATE.burstStat:null,storage:F.averaged?'summed':'raw',
+    orientation:g.orient,instrument_depth_m:g.dep,sound_speed_ms:c,digitization_rate_hz:digRate,
+    native_sample_m:nativeSample,range_samples_per_bin:rspb,bin_thickness_m:dz,adc_samples_per_ping:rspb*g.nB,
+    range_start_m:startR,range_max_m:maxR,pulse_us:pulse,pulse_limited_res_m:pulseRes,
+    depth_min_m:d0,depth_max_m:d1,column_interval_s:dt!=null?dt/1000:null,time_span_days:span/86400000,
+    memory_mb:estMemoryMB()};
+}
+function timeIntegrityHTML(){
+  const t=timeDiagnostics(); if(!t)return '';
+  const kv=(k,v,c)=>`<div class="kv"><span>${k}</span><span${c?' style="color:'+c+'"':''}>${v}</span></div>`;
+  const fmtS=x=>x==null?'—':(x<120?fmt(x,1)+' s':x<7200?fmt(x/60,1)+' min':fmt(x/3600,1)+' h');
+  let h=`<div class="kv" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px"><span><b>Time integrity</b></span><span></span></div>`;
+  h+=kv('Order', t.inversions?('NON-MONOTONIC ('+t.inversions+')'):'chronological \u2713', t.inversions?'var(--bad)':'var(--accent2)');
+  if(t.sortedApplied) h+=kv('Re-sorted at import', t.sortedApplied.toLocaleString()+' profiles', 'var(--warn)');
+  h+=kv('Duplicate timestamps', t.duplicates?t.duplicates.toLocaleString():'none', t.duplicates?'var(--warn)':'');
+  h+=kv('Median / min interval', fmtS(t.medianDtS)+' / '+fmtS(t.minDtS));
+  h+=kv('Largest gap', fmtS(t.maxGapS));
+  return h;
+}
+function dataStructureHTML(){
+  const d=dataStructure(); if(!d)return '';
+  const kv=(k,v)=>`<div class="kv"><span>${k}</span><span>${v}</span></div>`;
+  const hd=t=>`<div class="kv" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px"><span><b>${t}</b></span><span></span></div>`;
+  const s=d.column_interval_s;
+  return `<div class="card"><h4>Data structure — ${d.frequency_khz||'?'} kHz${d.serial?(' · S/N '+d.serial):''}</h4>
+   <div class="sub">Raw matrix = range bins (rows) × pings/profiles (columns); values are calibrated Sv (dB re 1 m⁻¹). Indexed sv[t·nB + i].</div>
+   ${kv('Matrix (rows × cols)', d.rows_bins+' bins × '+d.cols_profiles.toLocaleString()+' '+(d.load_mode==='burst'?'bursts':'pings'))}
+   ${kv('Load mode', d.load_mode+(d.burst_stat?(' (burst '+d.burst_stat+')'):'')+(d.storage==='summed'?' · summed storage':''))}
+   ${hd('Depth / range')}
+   ${kv('Bin thickness Δr', fmt(d.bin_thickness_m,3)+' m')}
+   ${kv('Number of bins', d.rows_bins)}
+   ${kv('Range coverage', fmt(d.range_start_m,2)+' – '+fmt(d.range_max_m,1)+' m')}
+   ${kv('Depth coverage', fmt(d.depth_min_m,1)+' – '+fmt(d.depth_max_m,1)+' m · '+d.orientation+'-looking, inst. '+fmt(d.instrument_depth_m,1)+' m')}
+   ${kv('Digitization rate', d.digitization_rate_hz.toLocaleString()+' Hz → '+fmt(d.native_sample_m*100,2)+' cm/sample')}
+   ${kv('Range averaging', d.range_samples_per_bin+' samples/bin · '+d.adc_samples_per_ping.toLocaleString()+' samples/ping')}
+   ${kv('Pulse-limited resolution', fmt(d.pulse_limited_res_m,2)+' m (τ = '+fmt(d.pulse_us,0)+' µs)')}
+   ${hd('Time')}
+   ${kv('Column interval (median)', s!=null?(s<120?fmt(s,1)+' s':fmt(s/60,1)+' min'):'—')}
+   ${kv('Time span', fmt(d.time_span_days,2)+' days')}
+   ${kv('Sound speed', fmt(d.sound_speed_ms,1)+' m/s')}
+   ${kv('In-app memory', fmt(d.memory_mb,1)+' MB')}
+   ${timeIntegrityHTML()}
+   <div class="btnrow" style="margin-top:10px"><button id="expStruct" class="ghost">⇩ Data structure (JSON)</button></div></div>`;
+}
 function renderBatch(){
   const el=$('#batchBody');
   const nFiles=STATE.files.filter(f=>f.type==='data').length;
   el.innerHTML=`
+    ${dataStructureHTML()}
     <div class="card"><h4>Batch automation</h4>
     <div class="sub">Process every loaded .01A file, then export machine-readable products for downstream pipelines.</div>
     <div class="kv"><span>Data files loaded</span><span>${nFiles}</span></div>
@@ -1394,6 +1496,7 @@ function renderBatch(){
   $('#expGrid').onclick=exportGridCSV;
   $('#expCM').onclick=()=>{const c=cmSeries();downloadCSV('azfp_cm_nasc_timeseries.csv',[['time_utc','cm_depth_m','nasc_m2_nmi2']].concat(c.t.map((t,i)=>[new Date(t).toISOString(),fmt(c.cm[i],2),fmt(c.nasc[i],2)])));};
   $('#expReport').onclick=exportReport;
+  { const es=$('#expStruct'); if(es)es.onclick=()=>downloadText('azfp_data_structure.json',JSON.stringify(dataStructure(),null,2)); }
 }
 function exportGridCSV(){
   const g=STATE.grid; if(!g){toast('No grid');return;}
@@ -1465,6 +1568,9 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <h3>9 · Automated detection &amp; migration reports</h3>
   <p><b>Object detection &amp; labelling.</b> On the Annotations tab, <i>Auto-detect</i> thresholds the calibrated Sv grid in the current view, groups contiguous above-threshold cells with a connected-component (8-neighbour flood-fill) pass, and classifies each patch from its shape and position: broad, time-persistent patches become <b>layers</b> (zooplankton); compact high-Sv blobs become <b>aggregations</b>; tiny strong patches become <b>fish / single targets</b>; patches against the surface or the instrument become <b>surface/ice</b> or <b>bottom</b>. Each detection is added as a labelled region with its mean/peak Sv, height and centre-of-mass depth, and can be edited or reclassified like any manual annotation. The threshold defaults to the 90th percentile of the visible Sv.</p>
   <p><b>Vertical-migration insights &amp; reports.</b> The Insights tab computes the backscatter-weighted centre of mass over physical depths for every profile, folds it onto a 24-hour clock to isolate the diel cycle, and derives the migration amplitude, day- and night-time depths and the timing of fastest ascent and descent. It classifies the pattern (normal DVM, reverse DVM, or none), breaks the record down by day, and correlates centre-of-mass depth with temperature. A plain-language summary is generated automatically, and <i>Download full report</i> exports a self-contained HTML document (with inline SVG diel and time-series charts, metrics, a per-day table and a detected-object summary) suitable for archiving or sharing. These outputs are generated automatically and should be reviewed before publication.</p>
+
+  <h3>10 · Time ordering across files</h3>
+  <p>AZFP deployments that use a phase schedule write <b>one file per phase</b>: the files share a <code>YYMMDDhh</code> basename and differ only by extension (<code>.01A</code>, <code>.02A</code>, …), and each contains that phase's bursts spread across the entire period rather than a contiguous block of time. Concatenating such files in filename order therefore produces a badly non-monotonic time axis — profiles from different hours interleave, the echogram shows vertical striping, and day boundaries and time labels repeat. AZFP Studio reads each ping's UTC timestamp from its own header and <b>re-sorts every frequency's profiles chronologically after ingest</b>, permuting the count grids, ancillary rows and source labels together so each spectrum stays paired with its own timestamp. The number of re-ordered profiles is reported on import, and the Automation tab shows a <i>Time integrity</i> summary (ordering, duplicate timestamps, median and minimum interval, largest gap) for the active frequency.</p>
 
   <h3>Data-integrity note</h3>
   <p>The example files bundled with this project were altered by a text-mode transfer: high bytes (0x80–0xFF) were replaced with the Unicode replacement marker, which is <b>lossy and irreversible</b> for the acoustic amplitudes. AZFP Studio therefore ships with a synthetic demonstration deployment. Load your original binary <code>.01A</code> files (and the matching <code>.XML</code>) for real analysis — the parser reads the genuine format directly.</p>
@@ -1583,6 +1689,7 @@ function processData(){
   const cols=STATE.freqs.map(f=>f.nT).reduce((a,b)=>a+b,0);
   $('#hstat').innerHTML=`<b>${totalPings.toLocaleString()}</b> pings → <b>${cols.toLocaleString()}</b> ${STATE.resolution==='burst'?'bursts':'cols'} · ${STATE.freqs.length} freq · ${estMemoryMB().toFixed(1)} MB`;
   switchTab('echogram'); autoRange();
+  if(STATE.timeFix&&STATE.timeFix.total) toast('Note: '+STATE.timeFix.total+' out-of-order profiles re-sorted chronologically (phase files)');
   toast('Processed '+totalPings.toLocaleString()+' pings — '+STATE.freqs.map(f=>f.freq+' kHz: '+f.nT.toLocaleString()).join(', ')+(truncated?' · full-res cap hit':'')+(errs.length?' · '+errs.length+' skipped':''));
 }
 
