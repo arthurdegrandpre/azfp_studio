@@ -201,6 +201,10 @@ tr:hover td{background:#151d28}
           <input type="range" id="gamma" class="narrow" min="0.4" max="2.5" step="0.05" value="1"/>
           <label title="Linear = even dB ramp (clips in strong signal). Histogram EQ = colour by data density, reveals fine structure everywhere. Local = sliding local-mean removal, best inside bright layers.">Contrast</label>
           <select id="contrastSel"><option value="linear">Linear</option><option value="histeq">Histogram EQ</option><option value="local">Local (adaptive)</option></select>
+          <label title="Local contrast strength — higher reveals finer variation inside strong layers">Detail</label>
+          <input type="range" id="detailAmt" class="narrow" min="10" max="150" step="5" value="55"/>
+          <label title="Local window size (% of view) — smaller = finer scale structure">Win</label>
+          <input type="range" id="detailWin" class="narrow" min="1" max="20" step="1" value="3"/>
         </div>
         <div class="grp">
           <label>Palette</label>
@@ -474,7 +478,7 @@ function tsFromCount(N,R,cal){
    is materialised as a Float32 Sv grid for rendering, keeping memory bounded
    even for multi-month deployments. */
 const STATE={files:[],freqs:[],activeFreq:0,grid:null,anc:null,annotations:[],
-  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5,cfg:null,pool:'mean',depthNorm:'off',depthNormAmt:40,contrast:'linear'};
+  view:{x0:0,x1:1,y0:0,y1:1},tool:'pan',palette:'viridis',xmlCal:null,mfaw:null,resolution:'full',filter:'none',threshold:-120,burstStat:'mean',gamma:1,minY:0,detThr:null,detMin:5,cfg:null,pool:'mean',depthNorm:'off',depthNormAmt:40,contrast:'linear',detail:55,detailWin:3};
 
 // Burst-grouping parameters (memory management)
 const BURST={gap:90000, maxMs:1200000, maxPings:1000, fullMaxCols:400000};
@@ -762,18 +766,26 @@ function buildContrastMap(F,W,H,smin,rng){
     return v=>{let b=((v-lo)/r2*NBH)|0; if(b<0)b=0; else if(b>=NBH)b=NBH-1; return cdf[b];};
   }
   if(mode==='local'){
-    const rx=Math.max(2,Math.round(W*0.02)), ry=Math.max(1,Math.round(H*0.06));
-    const S=new Float64Array((W+1)*(H+1)), C=new Float64Array((W+1)*(H+1));
-    for(let t=0;t<W;t++)for(let r=0;r<H;r++){const v=F[t*H+r],ok=v>-900?1:0,i1=(t+1)*(H+1)+(r+1);
-      S[i1]=(ok?v:0)+S[t*(H+1)+(r+1)]+S[(t+1)*(H+1)+r]-S[t*(H+1)+r];
-      C[i1]=ok+C[t*(H+1)+(r+1)]+C[(t+1)*(H+1)+r]-C[t*(H+1)+r];}
-    const boost=1.6, mid=0.5;
+    // Local z-score: normalise by the LOCAL standard deviation, not the global Sv window.
+    // Inside a strong, near-uniform layer the local spread may be a fraction of a dB —
+    // dividing by the 30+ dB window collapsed it to one colour. Dividing by the local
+    // sigma rescales whatever variation exists there to the full palette.
+    const win=clamp(STATE.detailWin||3,1,25);
+    const rx=Math.max(1,Math.round(W*win/100)), ry=Math.max(1,Math.round(H*win/100));
+    const strength=clamp((STATE.detail==null?55:STATE.detail)/50,0.1,3);
+    const N=(W+1)*(H+1), S=new Float64Array(N), Q=new Float64Array(N), C=new Float64Array(N);
+    for(let t=0;t<W;t++)for(let r=0;r<H;r++){const v=F[t*H+r],ok=v>-900?1:0,x=ok?v:0,i1=(t+1)*(H+1)+(r+1),
+      a=t*(H+1)+(r+1),b=(t+1)*(H+1)+r,c=t*(H+1)+r;
+      S[i1]=x+S[a]+S[b]-S[c]; Q[i1]=x*x+Q[a]+Q[b]-Q[c]; C[i1]=ok+C[a]+C[b]-C[c];}
+    const box=(A,t0,t1,r0,r1)=>A[t1*(H+1)+r1]-A[t0*(H+1)+r1]-A[t1*(H+1)+r0]+A[t0*(H+1)+r0];
+    const SDFLOOR=0.08;   // dB — below this a neighbourhood is genuinely flat/quantised
     return (v,t,r)=>{
       const t0=Math.max(0,t-rx),t1=Math.min(W,t+rx+1),r0=Math.max(0,r-ry),r1=Math.min(H,r+ry+1);
-      const sum=S[t1*(H+1)+r1]-S[t0*(H+1)+r1]-S[t1*(H+1)+r0]+S[t0*(H+1)+r0];
-      const cnt=C[t1*(H+1)+r1]-C[t0*(H+1)+r1]-C[t1*(H+1)+r0]+C[t0*(H+1)+r0];
-      if(cnt<1) return (v-smin)/rng;
-      return mid+boost*((v-(sum/cnt))/rng);
+      const cnt=box(C,t0,t1,r0,r1); if(cnt<4) return (v-smin)/rng;
+      const m=box(S,t0,t1,r0,r1)/cnt;
+      let varc=box(Q,t0,t1,r0,r1)/cnt-m*m; if(!(varc>0))varc=0;
+      const sd=Math.max(Math.sqrt(varc),SDFLOOR);
+      return 0.5+strength*(v-m)/(4*sd);     // ±2 local sigma spans the palette
     };
   }
   return v=>(v-smin)/rng;
@@ -1478,6 +1490,23 @@ function dataStructure(){
     depth_min_m:d0,depth_max_m:d1,column_interval_s:dt!=null?dt/1000:null,time_span_days:span/86400000,
     memory_mb:estMemoryMB()};
 }
+function saturationStats(){
+  const F=STATE.freqs[STATE.activeFreq]; if(!F||!F.counts)return null;
+  const c=F.counts, n=c.length, step=Math.max(1,Math.floor(n/400000));
+  let hi=0,lo=0,tot=0,mx=0;
+  for(let k=0;k<n;k+=step){const v=c[k]; if(v>=65535)hi++; if(v<=0)lo++; if(v>mx)mx=v; tot++;}
+  return {pctCeiling:100*hi/tot, pctZero:100*lo/tot, maxCount:mx, ceilingReached:mx>=65535};
+}
+function saturationHTML(){
+  const s=saturationStats(); if(!s)return '';
+  const kv=(k,v,c)=>`<div class="kv"><span>${k}</span><span${c?' style="color:'+c+'"':''}>${v}</span></div>`;
+  let h=`<div class="kv" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px"><span><b>Signal saturation</b></span><span></span></div>`;
+  h+=kv('Max raw count', s.maxCount.toLocaleString()+' / 65535', s.ceilingReached?'var(--bad)':'');
+  h+=kv('Cells at ADC ceiling', s.pctCeiling>0.001?fmt(s.pctCeiling,3)+' %':'none', s.pctCeiling>0.1?'var(--bad)':s.pctCeiling>0?'var(--warn)':'var(--accent2)');
+  h+=kv('Cells at zero', s.pctZero>0.001?fmt(s.pctZero,3)+' %':'none', s.pctZero>1?'var(--warn)':'');
+  h+=`<div class="mini" style="margin-top:4px">${s.pctCeiling>0.1?'Some cells are clipped at the digitiser ceiling — those are a genuine data limit, no display setting can recover detail there.':'No hardware clipping detected: flat-looking areas are a <b>display</b> limit — use Contrast → Local (adaptive) and raise Detail.'}</div>`;
+  return h;
+}
 function timeIntegrityHTML(){
   const t=timeDiagnostics(); if(!t)return '';
   const kv=(k,v,c)=>`<div class="kv"><span>${k}</span><span${c?' style="color:'+c+'"':''}>${v}</span></div>`;
@@ -1513,6 +1542,7 @@ function dataStructureHTML(){
    ${kv('Sound speed', fmt(d.sound_speed_ms,1)+' m/s')}
    ${kv('In-app memory', fmt(d.memory_mb,1)+' MB')}
    ${timeIntegrityHTML()}
+   ${saturationHTML()}
    <div class="btnrow" style="margin-top:10px"><button id="expStruct" class="ghost">⇩ Data structure (JSON)</button></div></div>`;
 }
 function renderBatch(){
@@ -1617,7 +1647,7 @@ NASC = 4π·1852²·Σ(sᵥᵢ·Δz)     [m²/nmi²]</div>
   <p>Echogram interpretation depends heavily on the colour mapping and on suppressing noise. The <b>Sv range</b> sliders set the colour limits; the <b>Auto</b> button scales them to the data (10th–99th percentile) and is applied automatically when data is loaded, so weak scattering layers are visible without manual tuning. Several visualization filters operate on the displayed grid (they do not alter the calibrated data used for metrics or export):</p>
   <p><b>Despeckle (median 3×3 / 5×5)</b> removes isolated impulse noise and single-target spikes while preserving layer edges. <b>Smooth (mean 3×3 / 5×5)</b> averages in the linear domain to enhance faint, spatially coherent layers. <b>Background removal</b> subtracts, for each depth, a low-percentile (time-persistent) background estimate — useful for removing constant electronic noise or near-field ringing bands (note it also removes time-invariant biological layers). The <b>threshold</b> slider masks everything below a chosen Sv (a noise floor), and the <b>contrast (γ)</b> slider applies a gamma curve to the colour mapping (values below 1 lift weak echoes, above 1 harden contrast). A <b>depth-limit</b> control restricts the displayed depth range; the depth axis is clamped to physical depths (0 m and below) so up-looking bins whose range exceeds the instrument depth are never shown as negative "above-surface" depths. A horizontal <b>Time zoom</b> tool plus an overview navigator support browsing long multi-day series.</p>
   <p><b>Rendering fidelity &amp; depth normalization.</b> The echogram is resampled directly to the plot's pixel resolution using a selectable reducer — <b>Mean</b> (energetic average), <b>Peak</b> (maximum, which preserves thin transient targets a plain average or nearest-neighbour downsample would drop), <b>Median</b> (robust — suppresses speckle while keeping layer structure), or <b>None</b> (point sample, 1:1 when zoomed in). Every mode rasterises at the plot's pixel resolution: a bitmap wider than the plot would be nearest-neighbour scaled and would silently drop columns. A pixel-ratio badge shows how many pings and bins each screen pixel covers.</p>
-  <p><b>Contrast mapping.</b> A <i>Linear</i> ramp spreads the palette evenly over dB, so within a strong scattering layer — where most values sit above the window top — every pixel clips to the same colour and fine-scale change becomes invisible. Two adaptive alternatives are provided: <b>Histogram EQ</b> allocates colour by data density over the actual data range (ignoring the manual window, so nothing is clipped flat), and <b>Local (adaptive)</b> subtracts a sliding local mean via a summed-area table, exposing fine structure inside bright layers and simultaneously removing much of the vertical range trend. Depth <i>Equalize</i> now uses the per-depth <b>median</b> rather than the mean, so a bright layer no longer biases the correction. Because spreading and absorption make deeper (longer-range) echoes appear weaker even after TVG, an adjustable <b>Depth normalization</b> is provided: <i>Deep gain</i> adds a depth-increasing gain (up to the slider value) to the display, and <i>Equalize</i> removes the per-depth time-mean so features at every depth are shown with comparable contrast. Both act on the display only and do not change the calibrated Sv used for metrics or export.</p>
+  <p><b>Contrast mapping.</b> A <i>Linear</i> ramp spreads the palette evenly over dB, so within a strong scattering layer — where most values sit above the window top — every pixel clips to the same colour and fine-scale change becomes invisible. Two adaptive alternatives are provided: <b>Histogram EQ</b> allocates colour by data density over the actual data range (ignoring the manual window, so nothing is clipped flat), and <b>Local (adaptive)</b> applies a local z-score — each cell is expressed as its deviation from the surrounding neighbourhood divided by that neighbourhood's <i>own</i> standard deviation (both from summed-area tables). This is the key to seeing inside a strong layer: where the internal spread may be a fraction of a dB, dividing by the 30+ dB colour window collapses it to a single colour, whereas dividing by the local sigma rescales whatever variation exists to the full palette. <b>Detail</b> sets the strength and <b>Win</b> the neighbourhood size (smaller windows expose finer scales). A floor on the local sigma prevents amplifying genuinely flat or quantised areas into noise. Because the mapping is relative, colours under Local mode are not absolute Sv — hover still reports the true value. The Automation tab reports whether any cells reach the digitiser ceiling, distinguishing a genuine hardware clipping limit from a display limit. Depth <i>Equalize</i> now uses the per-depth <b>median</b> rather than the mean, so a bright layer no longer biases the correction. Because spreading and absorption make deeper (longer-range) echoes appear weaker even after TVG, an adjustable <b>Depth normalization</b> is provided: <i>Deep gain</i> adds a depth-increasing gain (up to the slider value) to the display, and <i>Equalize</i> removes the per-depth time-mean so features at every depth are shown with comparable contrast. Both act on the display only and do not change the calibrated Sv used for metrics or export.</p>
   <p><b>Within-burst structure.</b> In burst-averaged mode each burst is reduced to one profile, which can hide short-lived structure. Rather than keep every raw ping in memory, the app computes four streaming reductions per burst at ingest — <b>Mean</b> (calibrated backscatter), <b>Peak</b> (the strongest ping in the burst, revealing transient or sparse targets such as individual fish), <b>Floor</b> (the minimum, emphasising persistent layers), and <b>Variability</b> (within-burst standard deviation, highlighting motion and patchiness). The <b>Burst</b> selector switches between them, giving intra-burst contrast control at a fraction of the memory of full-resolution storage. Load in <b>Every-ping</b> mode to inspect individual pings directly.</p>
 
   <h3>9 · Automated detection &amp; migration reports</h3>
@@ -1897,6 +1927,8 @@ function initUI(){
   $('#gamma').oninput=e=>{STATE.gamma=+e.target.value;refreshEchogram();};
   $('#poolSel').onchange=e=>{STATE.pool=e.target.value;refreshEchogram();};
   $('#contrastSel').onchange=e=>{STATE.contrast=e.target.value;refreshEchogram();};
+  $('#detailAmt').oninput=e=>{STATE.detail=+e.target.value;refreshEchogram();};
+  $('#detailWin').oninput=e=>{STATE.detailWin=+e.target.value;refreshEchogram();};
   $('#depthNormSel').onchange=e=>{STATE.depthNorm=e.target.value;updateDepthNormLbl();refreshEchogram();};
   $('#depthNormAmt').oninput=e=>{STATE.depthNormAmt=+e.target.value;updateDepthNormLbl();refreshEchogram();};
   $$('.tools button[data-tool]').forEach(b=>b.onclick=()=>{STATE.tool=b.dataset.tool;$$('.tools button[data-tool]').forEach(x=>x.classList.toggle('on',x===b));$('#egCanvas').style.cursor=({region:'crosshair',zoom:'zoom-in',tzoom:'col-resize',pan:'grab'}[b.dataset.tool]||'grab');});
